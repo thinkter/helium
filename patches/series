@@ -362,3 +362,4 @@ helium/ui/exclusive-access-bubble.patch
 helium/ui/workspaces/model.patch
 helium/ui/workspaces/geometry.patch
 helium/ui/workspaces/views.patch
+helium/ui/workspaces/controller.patch

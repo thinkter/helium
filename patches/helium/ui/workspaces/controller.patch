@@ -1,0 +1,592 @@
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -519,6 +519,8 @@ static_library("ui") {
+   sources = [
+     "helium/helium_layout_state_controller.cc",
+     "helium/helium_layout_state_controller.h",
++    "helium/workspaces/workspace_controller.cc",
++    "helium/workspaces/workspace_controller.h",
+     "helium/workspaces/workspace_layout_geometry.cc",
+     "helium/workspaces/workspace_layout_geometry.h",
+     "helium/workspaces/workspace_layout_model.cc",
+--- a/chrome/browser/ui/browser_window/internal/browser_window_features.cc
++++ b/chrome/browser/ui/browser_window/internal/browser_window_features.cc
+@@ -82,6 +82,7 @@
+ #include "chrome/browser/ui/focus/browser_focus_controller_webui.h"
+ #include "chrome/browser/ui/fullscreen/browser_window_fullscreen_controller.h"
+ #include "chrome/browser/ui/helium/helium_layout_state_controller.h"
++#include "chrome/browser/ui/helium/workspaces/workspace_controller.h"
+ #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
+ #include "chrome/browser/ui/lens/lens_overlay_entry_point_controller.h"
+ #include "chrome/browser/ui/omnibox/ai_mode_page_action_controller.h"
+@@ -609,6 +610,11 @@ void BrowserWindowFeatures::Init(Browser
+               *browser, browser, browser_actions_->root_action_item());
+     }
+ 
++    // Inactive policy plumbing only; no real tabs are attached to the isolated
++    // workspace host and no interactive tiling mode is enabled here.
++    workspace_controller_ = GetUserDataFactory().CreateInstance<
++        helium::workspaces::WorkspaceController>(*browser, browser);
++
+     helium_layout_state_controller_ =
+         GetUserDataFactory().CreateInstance<HeliumLayoutStateController>(
+             *browser, browser, profile->GetPrefs());
+@@ -1202,6 +1208,8 @@ void BrowserWindowFeatures::TearDownPreB
+   glic_split_button_controller_.reset();
+   initial_web_ui_manager_.reset();
+   ai_overlay_dialog_controller_.reset();
++  // Drop tab subscriptions and per-window discovery before strip/window teardown.
++  workspace_controller_.reset();
+ 
+   // Owned-by-all members.
+   // contextual_tasks_* are reset first because the group is constructed last
+--- a/chrome/browser/ui/browser_window/public/browser_window_features.h
++++ b/chrome/browser/ui/browser_window/public/browser_window_features.h
+@@ -196,6 +196,10 @@ class GlicNudgeController;
+ class GlicSplitButtonController;
+ }  // namespace glic
+ 
++namespace helium::workspaces {
++class WorkspaceController;
++}
++
+ namespace lens {
+ class LensOverlayEntryPointController;
+ class LensRegionSearchController;
+@@ -709,6 +713,7 @@ class BrowserWindowFeatures {
+   std::unique_ptr<BrowserUserEducationInterface> user_education_;
+   std::unique_ptr<VerticalTabIphController> vertical_tab_iph_controller_;
+   std::unique_ptr<HeliumLayoutStateController> helium_layout_state_controller_;
++  std::unique_ptr<helium::workspaces::WorkspaceController> workspace_controller_;
+ 
+   std::unique_ptr<tabs::VerticalTabStripStateController>
+       vertical_tab_strip_state_controller_;
+--- /dev/null
++++ b/chrome/browser/ui/helium/workspaces/workspace_controller.cc
+@@ -0,0 +1,200 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/helium/workspaces/workspace_controller.h"
++
++#include "base/check.h"
++#include "base/functional/bind.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++
++namespace helium::workspaces {
++
++BASE_FEATURE(kWorkspaceTabTracking, base::FEATURE_DISABLED_BY_DEFAULT);
++DEFINE_USER_DATA(WorkspaceController);
++
++WorkspaceController::WorkspaceController(BrowserWindowInterface* window)
++    : window_(window),
++      scoped_unowned_user_data_(window->GetUnownedUserDataHost(), *this) {}
++
++WorkspaceController::~WorkspaceController() {
++  StopTracking();
++}
++
++// static
++WorkspaceController* WorkspaceController::From(BrowserWindowInterface* window) {
++  return Get(window->GetUnownedUserDataHost());
++}
++
++WorkspaceController::StartResult WorkspaceController::StartTracking() {
++  if (!base::FeatureList::IsEnabled(kWorkspaceTabTracking)) {
++    return StartResult::kFeatureDisabled;
++  }
++  if (window_->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
++    return StartResult::kUnsupportedWindow;
++  }
++  if (HasNativeSplit()) {
++    return StartResult::kNativeSplitPresent;
++  }
++  if (is_tracking()) {
++    return StartResult::kStarted;
++  }
++
++  auto* strip = window_->GetTabStripModel();
++  model_.CreateWorkspace(TabKey(), workspace_ids_, node_ids_);
++  TabKey previous;
++  for (int i = 0; i < strip->count(); ++i) {
++    const TabKey key = Associate(strip->GetTabAtIndex(i));
++    CHECK(model_.InsertTab(key, previous, OpenDisposition::kBackground,
++                           node_ids_));
++    previous = key;
++  }
++  if (auto* active = strip->GetActiveTab()) {
++    CHECK(model_.RevealTab(KeyForTab(active)));
++    // Even a singleton initial workspace has an explicit tabbed root.
++    CHECK(model_.SetLayout(LayoutKind::kTabbed, node_ids_));
++  }
++  strip->AddObserver(this);
++  tracking_ = true;
++  ++generation_;
++  return StartResult::kStarted;
++}
++
++void WorkspaceController::StopTracking() {
++  // TabStripModelObserver owns its observation bookkeeping; ScopedObservation
++  // is explicitly forbidden by TabStripModel.
++  StopObservingAll(this);
++  tracking_ = false;
++  subscriptions_.clear();
++  tabs_.clear();
++  detaching_.clear();
++  model_ = WorkspaceLayoutModel();
++  // Keep generators monotonic across re-enable, so stale IDs cannot alias.
++  ++generation_;
++}
++
++bool WorkspaceController::HasNativeSplit() const {
++  auto* strip = window_->GetTabStripModel();
++  for (int i = 0; i < strip->count(); ++i) {
++    if (strip->GetSplitForTab(i)) {
++      return true;
++    }
++  }
++  return false;
++}
++
++tabs::TabInterface* WorkspaceController::ResolveTab(TabKey key) const {
++  const auto it = tabs_.find(key);
++  if (!is_tracking() || it == tabs_.end() || detaching_.contains(key)) {
++    return nullptr;
++  }
++  auto* tab = it->second.Get();
++  if (!tab || tab->GetBrowserWindowInterface() != window_ ||
++      window_->GetTabStripModel()->GetIndexOfTab(tab) ==
++          TabStripModel::kNoTab) {
++    return nullptr;
++  }
++  return tab;
++}
++
++TabKey WorkspaceController::KeyForTab(const tabs::TabInterface* tab) const {
++  if (tab) {
++    for (const auto& [key, handle] : tabs_) {
++      if (handle == tab->GetHandle()) {
++        return key;
++      }
++    }
++  }
++  return TabKey();
++}
++
++TabKey WorkspaceController::Associate(tabs::TabInterface* tab) {
++  CHECK(!KeyForTab(tab));
++  const TabKey key = tab_ids_.GenerateNextId();
++  tabs_.emplace(key, tab->GetHandle());
++  auto& subscriptions = subscriptions_[key];
++  // Unretained is bounded by the owned subscriptions, cleared before teardown.
++  subscriptions.push_back(tab->RegisterWillDetach(base::BindRepeating(
++      &WorkspaceController::WillDetach, base::Unretained(this))));
++  subscriptions.push_back(tab->RegisterWillDiscardContents(base::BindRepeating(
++      &WorkspaceController::WillDiscard, base::Unretained(this))));
++  return key;
++}
++
++void WorkspaceController::WillDetach(tabs::TabInterface* tab,
++                                     tabs::TabInterface::DetachReason reason) {
++  // Invalidate resolution before ownership transfer; tree removal waits for
++  // the strip's confirmed kRemoved, not a close request or beforeunload.
++  detaching_.insert(KeyForTab(tab));
++  ++generation_;
++}
++
++void WorkspaceController::WillDiscard(tabs::TabInterface* tab,
++                                      content::WebContents* old_contents,
++                                      content::WebContents* new_contents) {
++  // GetContents still refers to old_contents here. No attachments or pointer
++  // cache to update; kReplaced below is the post-swap notification.
++  ++generation_;
++}
++
++void WorkspaceController::OnTabStripModelChanged(
++    TabStripModel* strip,
++    const TabStripModelChange& change,
++    const TabStripSelectionChange& selection) {
++  if (HasNativeSplit()) {
++    StopTracking();
++    return;
++  }
++  ++generation_;
++  switch (change.type()) {
++    case TabStripModelChange::kInserted:
++      for (const auto& inserted : change.GetInsert()->contents) {
++        auto* tab = inserted.tab.get();
++        const int index = strip->GetIndexOfTab(tab);
++        const TabKey opener = KeyForTab(strip->GetOpenerOfTabAt(index));
++        const TabKey key = Associate(tab);
++        // Chromium has already applied disposition to selection. Never infer
++        // foreground from multi-selection, insertion index, or opener alone.
++        CHECK(model_.InsertTab(key, opener,
++                               tab == selection.new_tab
++                                   ? OpenDisposition::kForeground
++                                   : OpenDisposition::kBackground,
++                               node_ids_));
++      }
++      break;
++    case TabStripModelChange::kRemoved:
++      for (const auto& removed : change.GetRemove()->contents) {
++        const TabKey key = KeyForTab(removed.tab);
++        CHECK(model_.RemoveConfirmedTab(key));
++        subscriptions_.erase(key);
++        detaching_.erase(key);
++        tabs_.erase(key);
++      }
++      break;
++    case TabStripModelChange::kReplaced:
++      // TabModel swaps contents, not its handle. Retain the leaf and resolve
++      // GetContents afresh; no remove/insert and no new association key.
++      CHECK(KeyForTab(change.GetReplace()->tab));
++      break;
++    case TabStripModelChange::kMoved:
++    case TabStripModelChange::kSelectionOnly:
++      break;
++  }
++  if (selection.new_tab && selection.active_tab_changed()) {
++    CHECK(model_.RevealTab(KeyForTab(selection.new_tab)));
++  }
++  CHECK(model_.Validate());
++}
++
++void WorkspaceController::OnTabStripModelDestroyed(TabStripModel* strip) {
++  StopTracking();
++}
++
++void WorkspaceController::OnSplitTabChanged(const SplitTabChange& change) {
++  if (HasNativeSplit()) {
++    StopTracking();
++  }
++}
++
++}  // namespace helium::workspaces
+--- /dev/null
++++ b/chrome/browser/ui/helium/workspaces/workspace_controller.h
+@@ -0,0 +1,97 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_HELIUM_WORKSPACES_WORKSPACE_CONTROLLER_H_
++#define CHROME_BROWSER_UI_HELIUM_WORKSPACES_WORKSPACE_CONTROLLER_H_
++
++#include <cstdint>
++#include <map>
++#include <set>
++#include <vector>
++
++#include "base/callback_list.h"
++#include "base/feature_list.h"
++#include "base/memory/raw_ptr.h"
++#include "chrome/browser/ui/helium/workspaces/workspace_layout_model.h"
++#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
++#include "components/tabs/public/tab_interface.h"
++#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
++
++class BrowserWindowInterface;
++class TabStripModel;
++
++namespace helium::workspaces {
++
++BASE_DECLARE_FEATURE(kWorkspaceTabTracking);
++
++// Per-window, memory-only policy mirror. Does not own tabs, attach contents,
++// activate tabs, change foreground reporting, or enable interactive tiling.
++// BrowserWindowFeatures destroys this before the window and tab strip.
++class WorkspaceController : public TabStripModelObserver {
++ public:
++  DECLARE_USER_DATA(WorkspaceController);
++  enum class StartResult {
++    kStarted,
++    kFeatureDisabled,
++    kUnsupportedWindow,
++    kNativeSplitPresent
++  };
++
++  explicit WorkspaceController(BrowserWindowInterface* window);
++  ~WorkspaceController() override;
++  WorkspaceController(const WorkspaceController&) = delete;
++  WorkspaceController& operator=(const WorkspaceController&) = delete;
++
++  static WorkspaceController* From(BrowserWindowInterface* window);
++  // Explicit observation-only opt-in; not called by production UI. Native
++  // splits must be closed first. Later split creation stops tracking rather
++  // than migrating/destroying tabs. T11 must enforce exclusion before exposure.
++  StartResult StartTracking();
++  void StopTracking();
++  bool is_tracking() const { return tracking_; }
++  const WorkspaceLayoutModel& model() const { return model_; }
++
++  // UI-thread, borrowed result for immediate use only. Resolves the handle and
++  // verifies current window membership every time; never cache its contents.
++  tabs::TabInterface* ResolveTab(TabKey key) const;
++  TabKey KeyForTab(const tabs::TabInterface* tab) const;
++
++  // Invalidates future presentation/gesture requests on every observed change,
++  // including pre-detach/discard. No mutable model or input API is exposed yet.
++  // T10 must bind weak lifetime + generation and apply cumulative resize deltas
++  // to one gesture baseline, invalidating it on external changes (T08
++  // contract).
++  uint64_t generation() const { return generation_; }
++
++ private:
++  bool HasNativeSplit() const;
++  TabKey Associate(tabs::TabInterface* tab);
++  void WillDetach(tabs::TabInterface* tab,
++                  tabs::TabInterface::DetachReason reason);
++  void WillDiscard(tabs::TabInterface* tab,
++                   content::WebContents* old_contents,
++                   content::WebContents* new_contents);
++  void OnTabStripModelChanged(
++      TabStripModel* tab_strip_model,
++      const TabStripModelChange& change,
++      const TabStripSelectionChange& selection) override;
++  void OnTabStripModelDestroyed(TabStripModel* tab_strip_model) override;
++  void OnSplitTabChanged(const SplitTabChange& change) override;
++
++  const raw_ptr<BrowserWindowInterface> window_;
++  WorkspaceLayoutModel model_;
++  TabKey::Generator tab_ids_;
++  NodeId::Generator node_ids_;
++  WorkspaceId::Generator workspace_ids_;
++  std::map<TabKey, tabs::TabHandle> tabs_;
++  std::map<TabKey, std::vector<base::CallbackListSubscription>> subscriptions_;
++  std::set<TabKey> detaching_;
++  uint64_t generation_ = 0;
++  bool tracking_ = false;
++  ui::ScopedUnownedUserData<WorkspaceController> scoped_unowned_user_data_;
++};
++
++}  // namespace helium::workspaces
++
++#endif  // CHROME_BROWSER_UI_HELIUM_WORKSPACES_WORKSPACE_CONTROLLER_H_
+--- /dev/null
++++ b/chrome/browser/ui/helium/workspaces/workspace_controller_browsertest.cc
+@@ -0,0 +1,213 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/helium/workspaces/workspace_controller.h"
++
++#include "base/test/bind.h"
++#include "base/test/scoped_feature_list.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/tabs/split_tab_metrics.h"
++#include "chrome/browser/ui/tabs/tab_model.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "components/split_tabs/split_tab_visual_data.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/test/browser_test.h"
++
++namespace helium::workspaces {
++namespace {
++
++using Result = WorkspaceController::StartResult;
++
++TabKey ActiveKey(const WorkspaceController& controller) {
++  const auto& model = controller.model();
++  for (const auto& workspace : model.workspaces) {
++    if (workspace.id == model.active_workspace && workspace.active_leaf) {
++      return std::get<LeafState>(model.nodes.at(workspace.active_leaf)).tab;
++    }
++  }
++  return TabKey();
++}
++
++std::unique_ptr<content::WebContents> NewContents(Browser* browser) {
++  return content::WebContents::Create(
++      content::WebContents::CreateParams(browser->GetProfile()));
++}
++
++class WorkspaceControllerBrowserTest : public InProcessBrowserTest {
++ public:
++  WorkspaceControllerBrowserTest() {
++    features_.InitAndEnableFeature(kWorkspaceTabTracking);
++  }
++
++ private:
++  base::test::ScopedFeatureList features_;
++};
++
++IN_PROC_BROWSER_TEST_F(WorkspaceControllerBrowserTest,
++                       ImportOpenerDispositionAndReplacement) {
++  auto* strip = browser()->tab_strip_model();
++  strip->InsertWebContentsAt(1, NewContents(browser()), 0);
++  strip->InsertWebContentsAt(2, NewContents(browser()), 0);
++  auto* controller = WorkspaceController::From(browser());
++  ASSERT_TRUE(controller);
++  EXPECT_FALSE(controller->is_tracking());
++  ASSERT_EQ(Result::kStarted, controller->StartTracking());
++  const auto& initial = controller->model();
++  ASSERT_TRUE(initial.Validate());
++  ASSERT_EQ(1u, initial.workspaces.size());
++  const NodeId root = initial.workspaces.front().root;
++  const auto children =
++      std::get<ContainerState>(initial.nodes.at(root)).children;
++  ASSERT_EQ(3u, children.size());
++  for (int i = 0; i < 3; ++i) {
++    EXPECT_EQ(controller->KeyForTab(strip->GetTabAtIndex(i)),
++              std::get<LeafState>(initial.nodes.at(children[i])).tab);
++  }
++  EXPECT_EQ(LayoutKind::kTabbed,
++            std::get<ContainerState>(initial.nodes.at(root)).layout);
++  const TabKey opener = ActiveKey(*controller);
++  // Deliberately insert at the strip end: policy order follows the opener,
++  // not the temporary strip index. Background open retains browser activation.
++  strip->InsertWebContentsAt(3, NewContents(browser()), ADD_INHERIT_OPENER);
++  const TabKey background = controller->KeyForTab(strip->GetTabAtIndex(3));
++  EXPECT_EQ(opener, ActiveKey(*controller));
++  const auto inserted_children =
++      std::get<ContainerState>(controller->model().nodes.at(root)).children;
++  ASSERT_EQ(4u, inserted_children.size());
++  EXPECT_EQ(background, std::get<LeafState>(
++                            controller->model().nodes.at(inserted_children[1]))
++                            .tab);
++
++  auto* tab = strip->GetTabAtIndex(3);
++  const tabs::TabHandle handle = tab->GetHandle();
++  const uint64_t generation = controller->generation();
++  auto replacement = NewContents(browser());
++  auto* replacement_ptr = replacement.get();
++  auto old_contents =
++      strip->DiscardWebContents(tab->GetContents(), std::move(replacement));
++  EXPECT_EQ(handle, tab->GetHandle());
++  EXPECT_EQ(background, controller->KeyForTab(tab));
++  ASSERT_EQ(tab, controller->ResolveTab(background));
++  EXPECT_EQ(replacement_ptr, controller->ResolveTab(background)->GetContents());
++  EXPECT_GT(controller->generation(), generation);
++  EXPECT_EQ(
++      inserted_children,
++      std::get<ContainerState>(controller->model().nodes.at(root)).children);
++
++  strip->ActivateTabAt(3);
++  EXPECT_EQ(background, ActiveKey(*controller));
++  strip->InsertWebContentsAt(4, NewContents(browser()), ADD_ACTIVE);
++  EXPECT_EQ(controller->KeyForTab(strip->GetActiveTab()),
++            ActiveKey(*controller));
++  EXPECT_TRUE(controller->model().Validate());
++}
++
++IN_PROC_BROWSER_TEST_F(WorkspaceControllerBrowserTest,
++                       DetachTransferAndIndependentIncognito) {
++  auto* source = WorkspaceController::From(browser());
++  ASSERT_EQ(Result::kStarted, source->StartTracking());
++  auto* strip = browser()->tab_strip_model();
++  strip->InsertWebContentsAt(1, NewContents(browser()), 0);
++  auto* tab = strip->GetTabAtIndex(1);
++  const auto handle = tab->GetHandle();
++  const TabKey source_key = source->KeyForTab(tab);
++  Browser* other = CreateBrowser(browser()->GetProfile());
++  auto* destination = WorkspaceController::From(other);
++  ASSERT_NE(source, destination);
++  ASSERT_EQ(Result::kStarted, destination->StartTracking());
++  bool saw_pre_detach = false;
++  auto detach_subscription = tab->RegisterWillDetach(base::BindLambdaForTesting(
++      [&](tabs::TabInterface*, tabs::TabInterface::DetachReason) {
++        saw_pre_detach = true;
++        EXPECT_FALSE(source->ResolveTab(source_key));
++        // Association/tree survive until the confirmed strip removal.
++        EXPECT_EQ(source_key, source->KeyForTab(tab));
++      }));
++  auto detached = strip->DetachTabAtForInsertion(1);
++  EXPECT_TRUE(saw_pre_detach);
++  detach_subscription = {};
++  EXPECT_FALSE(source->ResolveTab(source_key));
++  EXPECT_FALSE(source->KeyForTab(detached.get()));
++  other->tab_strip_model()->InsertDetachedTabAt(1, std::move(detached), 0);
++  EXPECT_EQ(handle.Get(), destination->ResolveTab(destination->KeyForTab(tab)));
++  EXPECT_FALSE(source->ResolveTab(source_key));
++  EXPECT_TRUE(source->model().Validate());
++  EXPECT_TRUE(destination->model().Validate());
++
++  Browser* incognito = CreateIncognitoBrowser();
++  auto* private_controller = WorkspaceController::From(incognito);
++  ASSERT_NE(source, private_controller);
++  ASSERT_EQ(Result::kStarted, private_controller->StartTracking());
++  EXPECT_FALSE(private_controller->KeyForTab(tab));
++  EXPECT_EQ(1u, private_controller->model().workspaces.size());
++  const TabKey old_key = ActiveKey(*source);
++  source->StopTracking();
++  EXPECT_EQ(0, TabStripModelObserver::CountObservedModels(source));
++  const uint64_t stopped_generation = source->generation();
++  strip->InsertWebContentsAt(1, NewContents(browser()), 0);
++  strip->DetachAndDeleteWebContentsAt(1);
++  EXPECT_EQ(stopped_generation, source->generation());
++  EXPECT_TRUE(source->model().nodes.empty());
++  EXPECT_FALSE(source->ResolveTab(old_key));
++  EXPECT_TRUE(destination->is_tracking());
++  EXPECT_TRUE(private_controller->is_tracking());
++  ASSERT_EQ(Result::kStarted, source->StartTracking());
++  EXPECT_NE(old_key, ActiveKey(*source));
++  EXPECT_EQ(1, TabStripModelObserver::CountObservedModels(source));
++  // Exercise BrowserWindowFeatures' actual teardown with a tracking controller.
++  CloseBrowserSynchronously(other);
++  EXPECT_FALSE(handle.Get());
++  EXPECT_TRUE(source->is_tracking());
++  EXPECT_TRUE(private_controller->is_tracking());
++}
++
++IN_PROC_BROWSER_TEST_F(WorkspaceControllerBrowserTest,
++                       UnsupportedWindowsAndNativeSplits) {
++  Browser* popup = CreateBrowserForPopup(browser()->GetProfile());
++  EXPECT_FALSE(WorkspaceController::From(popup));
++  {
++    // Constructor also guards manual/alternate ownership, not just the factory.
++    WorkspaceController unsupported(popup);
++    EXPECT_EQ(Result::kUnsupportedWindow, unsupported.StartTracking());
++  }
++  EXPECT_FALSE(WorkspaceController::From(popup));
++  auto* strip = browser()->tab_strip_model();
++  strip->InsertWebContentsAt(1, NewContents(browser()), 0);
++  auto split =
++      strip->AddToNewSplit({0, 1}, split_tabs::SplitTabVisualData(),
++                           split_tabs::SplitTabCreatedSource::kToolbarButton);
++  auto* controller = WorkspaceController::From(browser());
++  EXPECT_EQ(Result::kNativeSplitPresent, controller->StartTracking());
++  EXPECT_FALSE(controller->is_tracking());
++  strip->RemoveSplit(split);
++  ASSERT_EQ(Result::kStarted, controller->StartTracking());
++  strip->AddToNewSplit({0, 1}, split_tabs::SplitTabVisualData(),
++                       split_tabs::SplitTabCreatedSource::kToolbarButton);
++  EXPECT_FALSE(controller->is_tracking());
++  EXPECT_TRUE(controller->model().nodes.empty());
++  EXPECT_EQ(2, strip->count());
++}
++
++class WorkspaceControllerDisabledBrowserTest : public InProcessBrowserTest {
++ public:
++  WorkspaceControllerDisabledBrowserTest() {
++    features_.InitAndDisableFeature(kWorkspaceTabTracking);
++  }
++
++ private:
++  base::test::ScopedFeatureList features_;
++};
++
++IN_PROC_BROWSER_TEST_F(WorkspaceControllerDisabledBrowserTest, Gate) {
++  auto* controller = WorkspaceController::From(browser());
++  ASSERT_TRUE(controller);
++  EXPECT_EQ(Result::kFeatureDisabled, controller->StartTracking());
++  EXPECT_FALSE(controller->is_tracking());
++  EXPECT_TRUE(controller->model().nodes.empty());
++}
++
++}  // namespace
++}  // namespace helium::workspaces
+--- a/chrome/test/BUILD.gn
++++ b/chrome/test/BUILD.gn
+@@ -3002,6 +3002,7 @@ if (!is_android) {
+       "../browser/ui/views/frame/multi_contents_view_drop_target_controller_browsertest.cc",
+       "../browser/ui/views/frame/system_menu_model_builder_browsertest.cc",
+       "../browser/ui/views/frame/vertical_tab_strip_region_view_browsertest.cc",
++      "../browser/ui/helium/workspaces/workspace_controller_browsertest.cc",
+       "../browser/ui/views/frame/workspace_contents_view_browsertest.cc",
+       "../browser/ui/views/hats/hats_browsertest.cc",
+       "../browser/ui/views/incognito_clear_browsing_data_dialog_browsertest.cc",
