@@ -63,7 +63,7 @@
        vertical_tab_strip_state_controller_;
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_controller.cc
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,236 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -72,6 +72,7 @@
 +
 +#include "base/check.h"
 +#include "base/functional/bind.h"
++#include "base/task/single_thread_task_runner.h"
 +#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 +#include "chrome/browser/ui/tabs/tab_strip_model.h"
 +
@@ -128,6 +129,7 @@
 +}
 +
 +void WorkspaceController::StopTracking() {
++  activation_requests_.InvalidateWeakPtrs();
 +  // TabStripModelObserver owns its observation bookkeeping; ScopedObservation
 +  // is explicitly forbidden by TabStripModel.
 +  StopObservingAll(this);
@@ -138,6 +140,40 @@
 +  model_ = WorkspaceLayoutModel();
 +  // Keep generators monotonic across re-enable, so stale IDs cannot alias.
 +  ++generation_;
++}
++
++bool WorkspaceController::RequestActivateTab(TabKey key,
++                                             uint64_t expected_generation) {
++  if (expected_generation != generation_ || !ResolveTab(key) ||
++      HasNativeSplit()) {
++    return false;
++  }
++  // A second accepted request supersedes the first, even in the same event
++  // turn. Weak lifetime and generation are independent guards: Stop/Start,
++  // removal, replacement and external selection must never revive old input.
++  activation_requests_.InvalidateWeakPtrs();
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostNonNestableTask(
++      FROM_HERE, base::BindOnce(&WorkspaceController::ActivateRequestedTab,
++                                activation_requests_.GetWeakPtr(), key,
++                                expected_generation));
++  return true;
++}
++
++void WorkspaceController::ActivateRequestedTab(TabKey key,
++                                               uint64_t expected_generation) {
++  if (expected_generation != generation_ || HasNativeSplit()) {
++    return;
++  }
++  auto* tab = ResolveTab(key);
++  if (!tab) {
++    return;
++  }
++  // TabStripModel forbids reentrant mutations. Non-nestable dispatch prevents
++  // nested UI loops from activating before the focus/observer stack unwinds. Do not optimistically reveal
++  // a different page, and do not access this controller after activation:
++  // synchronous observers can stop tracking or destroy the window. The normal
++  // selection notification below commits the selected ancestor path.
++  window_->GetTabStripModel()->ActivateTab(tab);
 +}
 +
 +bool WorkspaceController::HasNativeSplit() const {
@@ -266,7 +302,7 @@
 +}  // namespace helium::workspaces
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_controller.h
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,109 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -282,6 +318,7 @@
 +#include "base/callback_list.h"
 +#include "base/feature_list.h"
 +#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
 +#include "chrome/browser/ui/helium/workspaces/workspace_layout_model.h"
 +#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 +#include "components/tabs/public/tab_interface.h"
@@ -294,8 +331,8 @@
 +
 +BASE_DECLARE_FEATURE(kWorkspaceTabTracking);
 +
-+// Per-window, memory-only policy mirror. Does not own tabs, attach contents,
-+// activate tabs, change foreground reporting, or enable interactive tiling.
++// Per-window, memory-only policy and activation adapter. Does not own tabs,
++// attach contents, change foreground reporting, or enable interactive tiling.
 +// BrowserWindowFeatures destroys this before the window and tab strip.
 +class WorkspaceController : public TabStripModelObserver {
 + public:
@@ -326,14 +363,24 @@
 +  tabs::TabInterface* ResolveTab(TabKey key) const;
 +  TabKey KeyForTab(const tabs::TabInterface* tab) const;
 +
-+  // Invalidates future presentation/gesture requests on every observed change,
-+  // including pre-detach/discard. No mutable model or input API is exposed yet.
++  // Requests actual Chromium activation, not just tree selection. Dispatch is
++  // deferred out of tab-strip observer/focus stacks; true means queued, not
++  // activated. Only the latest accepted request survives, and any intervening
++  // lifecycle/selection change invalidates it. Confirmed strip selection drives
++  // RevealTab, so toolbar/commands and the tree share the same authority.
++  // No production UI calls this yet. This is NOT a renderer-focus entrypoint:
++  // T10's host adapter must additionally validate actual displayed membership.
++  bool RequestActivateTab(TabKey key, uint64_t expected_generation);
++
++  // Invalidates presentation/gesture requests on every observed change,
++  // including pre-detach/discard.
 +  // T10 must bind weak lifetime + generation and apply cumulative resize deltas
 +  // to one gesture baseline, invalidating it on external changes (T08
 +  // contract).
 +  uint64_t generation() const { return generation_; }
 +
 + private:
++  void ActivateRequestedTab(TabKey key, uint64_t expected_generation);
 +  bool HasNativeSplit() const;
 +  TabKey Associate(tabs::TabInterface* tab);
 +  void WillDetach(tabs::TabInterface* tab,
@@ -359,6 +406,7 @@
 +  uint64_t generation_ = 0;
 +  bool tracking_ = false;
 +  ui::ScopedUnownedUserData<WorkspaceController> scoped_unowned_user_data_;
++  base::WeakPtrFactory<WorkspaceController> activation_requests_{this};
 +};
 +
 +}  // namespace helium::workspaces
@@ -366,13 +414,15 @@
 +#endif  // CHROME_BROWSER_UI_HELIUM_WORKSPACES_WORKSPACE_CONTROLLER_H_
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_controller_browsertest.cc
-@@ -0,0 +1,213 @@
+@@ -0,0 +1,311 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
 +
 +#include "chrome/browser/ui/helium/workspaces/workspace_controller.h"
 +
++#include "base/run_loop.h"
++#include "base/task/single_thread_task_runner.h"
 +#include "base/test/bind.h"
 +#include "base/test/scoped_feature_list.h"
 +#include "chrome/browser/profiles/profile.h"
@@ -471,6 +521,102 @@
 +  strip->InsertWebContentsAt(4, NewContents(browser()), ADD_ACTIVE);
 +  EXPECT_EQ(controller->KeyForTab(strip->GetActiveTab()),
 +            ActiveKey(*controller));
++  EXPECT_TRUE(controller->model().Validate());
++}
++
++IN_PROC_BROWSER_TEST_F(WorkspaceControllerBrowserTest,
++                       DeferredActivationRevealsConfirmedSelection) {
++  auto* strip = browser()->tab_strip_model();
++  strip->InsertWebContentsAt(1, NewContents(browser()), 0);
++  strip->InsertWebContentsAt(2, NewContents(browser()), 0);
++  auto* controller = WorkspaceController::From(browser());
++  ASSERT_EQ(Result::kStarted, controller->StartTracking());
++  const TabKey first = controller->KeyForTab(strip->GetTabAtIndex(0));
++  const TabKey second = controller->KeyForTab(strip->GetTabAtIndex(1));
++  const TabKey third = controller->KeyForTab(strip->GetTabAtIndex(2));
++  const uint64_t generation = controller->generation();
++  EXPECT_FALSE(controller->RequestActivateTab(TabKey(), generation));
++  EXPECT_FALSE(controller->RequestActivateTab(second, generation - 1));
++  ASSERT_TRUE(controller->RequestActivateTab(second, generation));
++  // Latest accepted request wins without exposing an intermediate selection.
++  ASSERT_TRUE(controller->RequestActivateTab(third, generation));
++  EXPECT_EQ(first, ActiveKey(*controller));
++  EXPECT_EQ(strip->GetTabAtIndex(0), strip->GetActiveTab());
++  base::RunLoop().RunUntilIdle();
++  EXPECT_EQ(strip->GetTabAtIndex(2), strip->GetActiveTab());
++  EXPECT_EQ(third, ActiveKey(*controller));
++  const auto& model = controller->model();
++  const auto& root =
++      std::get<ContainerState>(model.nodes.at(model.workspaces.front().root));
++  EXPECT_EQ(third,
++            std::get<LeafState>(model.nodes.at(root.selected_child)).tab);
++  EXPECT_TRUE(model.Validate());
++
++  // External activation supersedes queued input, rather than bouncing focus
++  // back to an obsolete surface on the next event-loop turn.
++  ASSERT_TRUE(controller->RequestActivateTab(second, controller->generation()));
++  strip->ActivateTabAt(0);
++  base::RunLoop().RunUntilIdle();
++  EXPECT_EQ(first, ActiveKey(*controller));
++  EXPECT_EQ(strip->GetTabAtIndex(0), strip->GetActiveTab());
++}
++
++IN_PROC_BROWSER_TEST_F(WorkspaceControllerBrowserTest,
++                       ActivationRejectsReentrantAndObsoleteRequests) {
++  auto* strip = browser()->tab_strip_model();
++  strip->InsertWebContentsAt(1, NewContents(browser()), 0);
++  strip->InsertWebContentsAt(2, NewContents(browser()), 0);
++  auto* controller = WorkspaceController::From(browser());
++  ASSERT_EQ(Result::kStarted, controller->StartTracking());
++  auto* first = strip->GetTabAtIndex(0);
++  const TabKey second = controller->KeyForTab(strip->GetTabAtIndex(1));
++  const TabKey third = controller->KeyForTab(strip->GetTabAtIndex(2));
++  bool saw_deactivation = false;
++  auto subscription = first->RegisterWillDeactivate(
++      base::BindLambdaForTesting([&](tabs::TabInterface*) {
++        saw_deactivation = true;
++        // Queue, do not recursively enter TabStripModel's mutation guard.
++        EXPECT_TRUE(
++            controller->RequestActivateTab(third, controller->generation()));
++        // A modal/nested loop must not run the activation while the strip's
++        // mutation guard is held, even when ordinary nested tasks are allowed.
++        base::RunLoop nested(base::RunLoop::Type::kNestableTasksAllowed);
++        base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++            FROM_HERE, nested.QuitClosure());
++        nested.Run();
++        EXPECT_EQ(first, strip->GetActiveTab());
++      }));
++  ASSERT_TRUE(controller->RequestActivateTab(second, controller->generation()));
++  base::RunLoop().RunUntilIdle();
++  EXPECT_TRUE(saw_deactivation);
++  // The confirmed second-tab activation invalidated input issued while its
++  // pre-deactivation notification was still in flight.
++  EXPECT_EQ(second, ActiveKey(*controller));
++  EXPECT_EQ(strip->GetTabAtIndex(1), strip->GetActiveTab());
++  subscription = {};
++
++  ASSERT_TRUE(controller->RequestActivateTab(third, controller->generation()));
++  auto* target = strip->GetTabAtIndex(2);
++  auto old_contents =
++      strip->DiscardWebContents(target->GetContents(), NewContents(browser()));
++  base::RunLoop().RunUntilIdle();
++  EXPECT_EQ(second, ActiveKey(*controller));
++  EXPECT_EQ(third, controller->KeyForTab(target));
++
++  ASSERT_TRUE(controller->RequestActivateTab(third, controller->generation()));
++  auto detached = strip->DetachTabAtForInsertion(2);
++  base::RunLoop().RunUntilIdle();
++  EXPECT_EQ(second, ActiveKey(*controller));
++  EXPECT_FALSE(controller->ResolveTab(third));
++
++  const TabKey first_key = controller->KeyForTab(first);
++  ASSERT_TRUE(
++      controller->RequestActivateTab(first_key, controller->generation()));
++  controller->StopTracking();
++  ASSERT_EQ(Result::kStarted, controller->StartTracking());
++  base::RunLoop().RunUntilIdle();
++  EXPECT_EQ(strip->GetTabAtIndex(1), strip->GetActiveTab());
++  EXPECT_NE(second, ActiveKey(*controller));
 +  EXPECT_TRUE(controller->model().Validate());
 +}
 +
