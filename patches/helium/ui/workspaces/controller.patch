@@ -63,7 +63,7 @@
        vertical_tab_strip_state_controller_;
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_controller.cc
-@@ -0,0 +1,317 @@
+@@ -0,0 +1,329 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -236,6 +236,11 @@
 +  return tab;
 +}
 +
++void WorkspaceController::OnHostLayoutChanged() {
++  if (tracking_)
++    PresentHost();
++}
++
 +bool WorkspaceController::PresentHost() {
 +  if (!tracking_ || !browser_view_ || !workspace_host_)
 +    return false;
@@ -244,8 +249,11 @@
 +    if (auto* tab = ResolveTab(key); tab && tab->GetContents())
 +      bindings.emplace(key, tab->GetContents());
 +  }
++  // The workspace is a BrowserView child, so use the content region's current
++  // local bounds on every layout pass (not only at startup).
 +  workspace_host_->SetBoundsRect(browser_view_->contents_container()->bounds());
-+  if (!workspace_host_->Present(model_, LayoutMetrics(), bindings))
++  if (workspace_host_->bounds().IsEmpty() ||
++      !workspace_host_->Present(model_, LayoutMetrics(), bindings))
 +    return false;
 +  SetDisplayedTabs(workspace_host_->GetDisplayedTabKeys());
 +  return true;
@@ -261,8 +269,10 @@
 +      displayed.push_back(tab);
 +    }
 +  }
++  // This is the committed projection. Pending selection state is reserved for
++  // the one activation transaction below; leaving it set here permanently
++  // shadows this provider and can make a detached tab disappear forever.
 +  displayed_keys_ = std::move(keys);
-+  window_->GetTabStripModel()->SetPendingDisplayedTabsForSelection(displayed);
 +}
 +
 +std::vector<tabs::TabInterface*> WorkspaceController::GetDisplayedTabs() const {
@@ -301,9 +311,9 @@
 +
 +void WorkspaceController::WillDetach(tabs::TabInterface* tab,
 +                                     tabs::TabInterface::DetachReason reason) {
-+  // Invalidate resolution before ownership transfer; tree removal waits for
-+  // the strip's confirmed kRemoved, not a close request or beforeunload.
-+  detaching_.insert(KeyForTab(tab));
++  // Invalidate in-flight requests, but retain the committed displayed set.
++  // Detach can be canceled (beforeunload) or become a cross-window move; the
++  // kRemoved observer is the only point at which the model projection changes.
 +  ++generation_;
 +}
 +
@@ -368,6 +378,8 @@
 +    }
 +  }
 +  CHECK(model_.Validate());
++  if (tracking_)
++    PresentHost();
 +}
 +
 +void WorkspaceController::OnTabStripModelDestroyed(TabStripModel* strip) {
@@ -383,7 +395,7 @@
 +}  // namespace helium::workspaces
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_controller.h
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,128 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -462,6 +474,9 @@
 +  // before requesting activation so TabStripModel orders hide notifications.
 +  void SetDisplayedTabs(std::vector<TabKey> keys);
 +  bool PresentHost();
++  // Called by BrowserView after its layout/scale pass. The host bounds are
++  // owned by BrowserView; presentation is revalidated before publication.
++  void OnHostLayoutChanged();
 +
 +  // Invalidates presentation/gesture requests on every observed change,
 +  // including pre-detach/discard.
@@ -494,6 +509,8 @@
 +  WorkspaceId::Generator workspace_ids_;
 +  std::map<TabKey, tabs::TabHandle> tabs_;
 +  std::map<TabKey, std::vector<base::CallbackListSubscription>> subscriptions_;
++  // WillDetach is deliberately staged: Chromium may cancel a close or move.
++  // Keep the committed host projection until the model confirms removal.
 +  std::set<TabKey> detaching_;
 +  std::vector<TabKey> displayed_keys_;
 +  raw_ptr<BrowserView> browser_view_ = nullptr;
@@ -1004,11 +1021,34 @@
      // A thick square outline of the structural subtree, independent of native
      // rounded page-focus borders and the header's selected-child bottom rule.
      selection_outline_ = AddChildView(std::make_unique<views::View>());
-@@ -186,8 +268,13 @@ bool WorkspaceContentsView::Present(
+@@ -186,8 +268,36 @@ bool WorkspaceContentsView::Present(
      selection_outline_->GetViewAccessibility().SetIsIgnored(true);
      selection_outline_->SetBorder(
          views::CreateSolidBorder(4, ui::kColorFocusableBorderUnfocused));
 +  }
++  // MultiContentsView normally maintains this invariant for its two slots.
++  // Workspace leaves are dynamic, so demote every retained leaf first and then
++  // designate only the model's actual active leaf. Never mark all visible
++  // pages primary for accessibility.
++  for (const auto& [key, host] : leaves_) {
++    host.container->contents_view()
++        ->set_is_primary_web_contents_for_window(false);
++  }
++  for (const auto& workspace : model.workspaces) {
++    if (workspace.id != model.active_workspace)
++      continue;
++    for (const auto& leaf : geometry.leaves) {
++      if (leaf.node != workspace.active_leaf)
++        continue;
++      const auto key = std::get<LeafState>(model.nodes.at(leaf.node)).tab;
++      auto host = leaves_.find(key);
++      if (host != leaves_.end()) {
++        host->second.container->contents_view()
++            ->set_is_primary_web_contents_for_window(true);
++      }
++    }
++  }
++
 +  if (selection_outline_) {
 +    selection_outline_->SetVisible(!selection.IsEmpty());
      selection_outline_->SetBoundsRect(selection);
@@ -1018,7 +1058,7 @@
    return true;
  }
  
-@@ -211,7 +298,7 @@ gfx::Rect WorkspaceContentsView::selecti
+@@ -211,7 +321,7 @@ gfx::Rect WorkspaceContentsView::selecti
    return selection_outline_ ? selection_outline_->bounds() : gfx::Rect();
  }
  
@@ -1027,7 +1067,7 @@
    if (selection_outline_) {
      auto* outline = selection_outline_.get();
      selection_outline_ = nullptr;
-@@ -227,14 +314,27 @@ void WorkspaceContentsView::Clear() {
+@@ -227,14 +337,27 @@ void WorkspaceContentsView::Clear() {
      headers_.pop_back();
      RemoveChildViewT(header);
    }
@@ -1927,3 +1967,170 @@
    base::WeakPtrFactory<TabStripModel> weak_factory_{this};
  };
  
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/workspace_contents_view.h"
++#include "chrome/browser/ui/helium/workspaces/workspace_controller.h"
+ 
+ #include <stdint.h>
+ 
+@@ -1371,19 +1372,44 @@ views::View* BrowserView::GetSidePanelAn
+ }
+ 
+ ContentsContainerView* BrowserView::GetActiveContentsContainerView() {
++  if (workspace_contents_view_) {
++    const auto* active = browser_->tab_strip_model()->GetActiveTab();
++    const auto* controller = helium::workspaces::WorkspaceController::From(
++        browser_);
++    if (controller && active) {
++      return workspace_contents_view_->GetContainerForTab(
++          controller->KeyForTab(active));
++    }
++  }
+   return multi_contents_view_->GetActiveContentsContainerView();
+ }
+ 
+ ContentsContainerView* BrowserView::GetContentsContainerViewFor(
+     content::WebContents* web_contents) {
++  if (workspace_contents_view_) {
++    for (auto* container : workspace_contents_view_->GetDisplayedContainers()) {
++      if (container->contents_view()->web_contents() == web_contents)
++        return container;
++    }
++    return nullptr;
++  }
+   return multi_contents_view_->GetContentsContainerViewFor(web_contents);
+ }
+ 
+ helium::workspaces::WorkspaceContentsView*
+ BrowserView::InstallWorkspaceContentsView() {
+   if (!workspace_contents_view_) {
++    // Transfer ownership before exposing the new host. BrowserView's native
++    // pair must not retain a WebContents while the workspace attaches it.
++    for (auto* container : multi_contents_view_->contents_container_views()) {
++      container->contents_view()->set_is_primary_web_contents_for_window(false);
++      container->contents_view()->SetWebContents(nullptr);
++      container->SetVisible(false);
++    }
+     workspace_contents_view_ = AddChildView(
+         std::make_unique<helium::workspaces::WorkspaceContentsView>(this));
++    workspace_contents_view_->SetVisible(true);
++    InvalidateLayout();
+   }
+   return workspace_contents_view_.get();
+ }
+@@ -1393,10 +1419,18 @@ void BrowserView::RemoveWorkspaceContent
+     return;
+   workspace_contents_view_->Clear();
+   RemoveChildViewT(workspace_contents_view_.release());
++  // Reverse the transfer only after the workspace has detached every page.
++  auto* active = browser_->tab_strip_model()->GetActiveWebContents();
++  multi_contents_view_->GetActiveContentsView()->SetWebContents(active);
++  for (auto* container : multi_contents_view_->contents_container_views())
++    container->SetVisible(container->contents_view()->web_contents() != nullptr);
++  InvalidateLayout();
+ }
+ 
+ std::vector<raw_ptr<ContentsContainerView, DanglingUntriaged>>
+ BrowserView::GetContentsContainerViews() {
++  if (workspace_contents_view_)
++    return workspace_contents_view_->GetDisplayedContainers();
+   return multi_contents_view_->contents_container_views();
+ }
+ 
+@@ -2611,6 +2645,14 @@ void BrowserView::OnActiveTabChanged(con
+                                      int reason) {
+   DCHECK(new_contents);
+   TRACE_EVENT0("ui", "BrowserView::OnActiveTabChanged");
++  if (workspace_contents_view_) {
++    if (old_contents && !old_contents->IsBeingDestroyed())
++      old_contents->StoreFocus();
++    WebContentsObserver::Observe(new_contents);
++    UpdateUIForContents(new_contents, true);
++    UpdateTitleBar();
++    return;
++  }
+   views::WebView* active_contents_view = GetActiveContentsWebView();
+   bool tab_change_in_split_view =
+       IsTabChangeInSplitView(old_contents, new_contents);
+@@ -2756,6 +2798,14 @@ void BrowserView::OnActiveTabChanged(con
+ void BrowserView::OnTabDetached(content::WebContents* contents,
+                                 bool was_active) {
+   DCHECK(contents);
++  if (workspace_contents_view_) {
++    if (was_active) {
++      for (auto* contents_view : GetAllVisibleContentsWebViews())
++        contents_view->GetWebContentsCloseHandler()->ActiveTabChanged();
++      infobar_container_->ChangeInfoBarManager(nullptr);
++    }
++    return;
++  }
+   if (!was_active) {
+     return;
+   }
+@@ -2809,6 +2859,11 @@ gfx::Rect BrowserView::GetBounds() const
+ 
+ gfx::Size BrowserView::GetContentsSize() const {
+   DCHECK(initialized_);
++  if (workspace_contents_view_) {
++    if (auto* container = const_cast<BrowserView*>(this)
++                             ->GetActiveContentsContainerView())
++      return container->size();
++  }
+   return multi_contents_view_->GetActiveContentsContainerView()->size();
+ }
+ 
+@@ -3456,6 +3511,10 @@ void BrowserView::ShowChromeLabs() {
+ }
+ 
+ views::WebView* BrowserView::GetActiveContentsWebView() {
++  if (workspace_contents_view_) {
++    if (auto* container = GetActiveContentsContainerView())
++      return container->contents_view();
++  }
+   return multi_contents_view_->GetActiveContentsView();
+ }
+ 
+@@ -5095,6 +5154,12 @@ void BrowserView::MaybeUpdateStoredFocus
+ }
+ 
+ std::vector<ContentsWebView*> BrowserView::GetAllVisibleContentsWebViews() {
++  if (workspace_contents_view_) {
++    std::vector<ContentsWebView*> contents_views;
++    for (auto* container : workspace_contents_view_->GetDisplayedContainers())
++      contents_views.push_back(container->contents_view());
++    return contents_views;
++  }
+   std::vector<ContentsWebView*> contents_views;
+   contents_views.push_back(multi_contents_view_->GetActiveContentsView());
+   ContentsWebView* inactive_contents_view =
+@@ -5545,6 +5610,14 @@ void BrowserView::Layout(PassKey) {
+ 
+   LayoutSuperclass<views::View>(this);
+ 
++  if (workspace_contents_view_) {
++    workspace_contents_view_->SetBoundsRect(contents_container()->bounds());
++    if (auto* controller = helium::workspaces::WorkspaceController::From(
++            browser_)) {
++      controller->OnHostLayoutChanged();
++    }
++  }
++
+   // TODO(jamescook): Why was this in the middle of layout code?
+   toolbar_->location_bar()->UpdateFocusBehavior(IsToolbarVisible());
+   GetFrameView()->UpdateMinimumSize();
+--- a/chrome/browser/ui/views/frame/browser_view.h
++++ b/chrome/browser/ui/views/frame/browser_view.h
+@@ -246,6 +246,9 @@ class BrowserView : public BrowserWindow
+   helium::workspaces::WorkspaceContentsView* workspace_contents_view() const {
+     return workspace_contents_view_.get();
+   }
++  bool IsWorkspaceContentsViewActive() const {
++    return workspace_contents_view_ != nullptr;
++  }
+   void RemoveWorkspaceContentsView();
+ 
+   // Container for the tabstrip, toolbar, etc.
