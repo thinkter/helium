@@ -63,7 +63,7 @@
        vertical_tab_strip_state_controller_;
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_controller.cc
-@@ -0,0 +1,329 @@
+@@ -0,0 +1,330 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -200,7 +200,8 @@
 +  // transaction rather than briefly hiding panes that remain displayed.
 +  if (displayed_keys_.empty()) {
 +    SetDisplayedTabs({key});
-+  } else {
++  }
++  if (window_->GetTabStripModel()->GetActiveTab() != tab) {
 +    window_->GetTabStripModel()->SetPendingDisplayedTabsForSelection(
 +        GetDisplayedTabs());
 +  }
