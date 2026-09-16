@@ -11,7 +11,7 @@
      "tab_helpers.cc",
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_layout_model.cc
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,285 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -24,6 +24,172 @@
 +#include <utility>
 +
 +namespace helium::workspaces {
++namespace {
++
++WorkspaceState* ActiveWorkspace(WorkspaceLayoutModel& model) {
++  for (auto& workspace : model.workspaces) {
++    if (workspace.id == model.active_workspace) {
++      return &workspace;
++    }
++  }
++  return nullptr;
++}
++
++// Call only on a validated forest. Derive parent links rather than storing a
++// second copy of topology in the model.
++NodeId Parent(const WorkspaceLayoutModel& model, NodeId child) {
++  for (const auto& [id, node] : model.nodes) {
++    const auto* container = std::get_if<ContainerState>(&node);
++    if (container && std::ranges::contains(container->children, child)) {
++      return id;
++    }
++  }
++  return {};
++}
++
++bool Contains(const WorkspaceLayoutModel& model, NodeId root, NodeId node) {
++  while (node) {
++    if (node == root) {
++      return true;
++    }
++    node = Parent(model, node);
++  }
++  return false;
++}
++
++}  // namespace
++
++bool WorkspaceLayoutModel::SelectNode(NodeId node) {
++  if (!Validate()) {
++    return false;
++  }
++  auto* workspace = ActiveWorkspace(*this);
++  if (!workspace || !Contains(*this, workspace->root, node)) {
++    return false;
++  }
++  workspace->selected_node = node;
++  return true;
++}
++
++bool WorkspaceLayoutModel::SelectParent() {
++  if (!Validate()) {
++    return false;
++  }
++  const auto* workspace = ActiveWorkspace(*this);
++  return workspace && SelectNode(Parent(*this, workspace->selected_node));
++}
++
++bool WorkspaceLayoutModel::SelectChild() {
++  if (!Validate()) {
++    return false;
++  }
++  const auto* workspace = ActiveWorkspace(*this);
++  if (!workspace || !workspace->selected_node) {
++    return false;
++  }
++  const auto* container =
++      std::get_if<ContainerState>(&nodes.at(workspace->selected_node));
++  return container && SelectNode(container->selected_child);
++}
++
++NodeId WorkspaceLayoutModel::ResolveLayoutTarget() const {
++  if (!Validate()) {
++    return {};
++  }
++  for (const auto& workspace : workspaces) {
++    if (workspace.id != active_workspace || !workspace.selected_node) {
++      continue;
++    }
++    NodeId selected = workspace.selected_node;
++    if (std::holds_alternative<ContainerState>(nodes.at(selected))) {
++      return selected;
++    }
++    NodeId parent = Parent(*this, selected);
++    return parent ? parent : selected;
++  }
++  return {};
++}
++
++bool WorkspaceLayoutModel::SetLayout(LayoutKind layout,
++                                     NodeId::Generator& node_ids) {
++  switch (layout) {
++    case LayoutKind::kHorizontal:
++    case LayoutKind::kVertical:
++    case LayoutKind::kTabbed:
++      break;
++    default:
++      return false;
++  }
++  NodeId target = ResolveLayoutTarget();
++  if (!target) {
++    return false;
++  }
++  auto candidate = *this;
++  auto* workspace = ActiveWorkspace(candidate);
++  if (auto* container =
++          std::get_if<ContainerState>(&candidate.nodes.at(target))) {
++    container->layout = layout;
++    // Converting a split must not hide its active page. Hidden targets keep
++    // their remembered child; changing their layout does not activate them.
++    if (layout == LayoutKind::kTabbed &&
++        Contains(candidate, target, workspace->active_leaf)) {
++      NodeId child = workspace->active_leaf;
++      while (Parent(candidate, child) != target) {
++        child = Parent(candidate, child);
++      }
++      container->selected_child = child;
++    }
++  } else {
++    NodeId wrapper;
++    do {
++      wrapper = node_ids.GenerateNextId();
++    } while (candidate.nodes.contains(wrapper));
++    candidate.nodes.emplace(
++        wrapper, ContainerState{layout, {target}, target, {1}, target});
++    workspace->root = wrapper;
++    workspace->selected_node = wrapper;
++  }
++  if (!candidate.Validate()) {
++    return false;
++  }
++  *this = std::move(candidate);
++  return true;
++}
++
++bool WorkspaceLayoutModel::SetSelectedChild(NodeId container_id, NodeId child) {
++  if (!Validate()) {
++    return false;
++  }
++  const auto* workspace = ActiveWorkspace(*this);
++  if (!workspace || !Contains(*this, workspace->root, container_id)) {
++    return false;
++  }
++  const auto* container = std::get_if<ContainerState>(&nodes.at(container_id));
++  if (!container || !std::ranges::contains(container->children, child)) {
++    return false;
++  }
++  auto candidate = *this;
++  auto* next_workspace = ActiveWorkspace(candidate);
++  NodeId leaf = workspace->active_leaf;
++  if (!Contains(candidate, child, leaf)) {
++    const auto* subtree = std::get_if<ContainerState>(&nodes.at(child));
++    leaf = subtree ? subtree->last_focused_leaf : child;
++  }
++  // Reveal the remembered leaf even if its historical path is now hidden.
++  for (NodeId descendant = leaf, parent = Parent(candidate, descendant); parent;
++       descendant = parent, parent = Parent(candidate, parent)) {
++    auto& ancestor = std::get<ContainerState>(candidate.nodes.at(parent));
++    ancestor.selected_child = descendant;
++    ancestor.last_focused_leaf = leaf;
++  }
++  next_workspace->active_leaf = leaf;
++  next_workspace->selected_node = child;
++  if (!candidate.Validate()) {
++    return false;
++  }
++  *this = std::move(candidate);
++  return true;
++}
 +
 +bool WorkspaceLayoutModel::Validate() const {
 +  std::set<WorkspaceId> workspace_ids;
@@ -133,7 +299,7 @@
 +}  // namespace helium::workspaces
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_layout_model.h
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,92 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -199,6 +365,28 @@
 +  // every container remembers a descendant leaf. Does not resolve live tabs;
 +  // the controller must additionally verify coverage of its managed tab set.
 +  bool Validate() const;
++
++  // Mutations affect only the active workspace. Invalid input/state or a
++  // missing target returns false without changing the model. Successful no-ops
++  // return true. Structural navigation never activates a different page.
++  bool SelectNode(NodeId node);
++  bool SelectParent();
++  bool SelectChild();  // Descend to the selected container's remembered child.
++
++  // Container selection targets itself; leaf selection targets its parent.
++  // A singleton leaf root targets itself and is wrapped by SetLayout(). Null
++  // means there is no target (empty workspace/model or invalid state).
++  NodeId ResolveLayoutTarget() const;
++  // Keep this generator outside model snapshots and never recycle its IDs.
++  // Only singleton-root wrapping consumes IDs; existing IDs are skipped.
++  bool SetLayout(LayoutKind layout, NodeId::Generator& node_ids);
++
++  // Explicit child activation (e.g. a tabbed header), unlike SelectChild().
++  // Preserve the active page if already in this child; otherwise restore its
++  // remembered leaf and reveal that path, including tabbed ancestors.
++  // Structural selection becomes the child; topology, order and weights stay
++  // unchanged.
++  bool SetSelectedChild(NodeId container, NodeId child);
 +};
 +
 +}  // namespace helium::workspaces
@@ -206,7 +394,7 @@
 +#endif  // CHROME_BROWSER_UI_HELIUM_WORKSPACES_WORKSPACE_LAYOUT_MODEL_H_
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_layout_model_unittest.cc
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,430 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -417,6 +605,222 @@
 +  EXPECT_EQ(copy.workspaces[0].root, model.workspaces[0].root);
 +  EXPECT_EQ(std::get<LeafState>(copy.nodes.at(N(2))).tab, T(1));
 +  EXPECT_TRUE(copy.Validate());
++}
++
++// Compare every topology/association/weight field, including inactive trees.
++void ExpectSameTopology(const WorkspaceLayoutModel& before,
++                        const WorkspaceLayoutModel& after) {
++  ASSERT_EQ(before.nodes.size(), after.nodes.size());
++  for (const auto& [id, node] : before.nodes) {
++    ASSERT_TRUE(after.nodes.contains(id));
++    const auto& other = after.nodes.at(id);
++    ASSERT_EQ(node.index(), other.index());
++    if (const auto* leaf = std::get_if<LeafState>(&node)) {
++      EXPECT_EQ(leaf->tab, std::get<LeafState>(other).tab);
++    } else {
++      const auto& container = std::get<ContainerState>(node);
++      const auto& other_container = std::get<ContainerState>(other);
++      EXPECT_EQ(container.children, other_container.children);
++      EXPECT_EQ(container.split_weights, other_container.split_weights);
++    }
++  }
++  ASSERT_EQ(before.workspaces.size(), after.workspaces.size());
++  for (size_t i = 0; i < before.workspaces.size(); ++i) {
++    EXPECT_EQ(before.workspaces[i].id, after.workspaces[i].id);
++    EXPECT_EQ(before.workspaces[i].root, after.workspaces[i].root);
++  }
++  EXPECT_EQ(before.active_workspace, after.active_workspace);
++}
++
++void ExpectSameState(const WorkspaceLayoutModel& before,
++                     const WorkspaceLayoutModel& after) {
++  ExpectSameTopology(before, after);
++  for (const auto& [id, node] : before.nodes) {
++    if (const auto* container = std::get_if<ContainerState>(&node)) {
++      const auto& other = std::get<ContainerState>(after.nodes.at(id));
++      EXPECT_EQ(container->layout, other.layout);
++      EXPECT_EQ(container->selected_child, other.selected_child);
++      EXPECT_EQ(container->last_focused_leaf, other.last_focused_leaf);
++    }
++  }
++  for (size_t i = 0; i < before.workspaces.size(); ++i) {
++    EXPECT_EQ(before.workspaces[i].selected_node,
++              after.workspaces[i].selected_node);
++    EXPECT_EQ(before.workspaces[i].active_leaf,
++              after.workspaces[i].active_leaf);
++  }
++}
++
++TEST(WorkspaceLayoutModelTest, StructuralNavigationDoesNotActivatePages) {
++  auto model = Sample();
++  auto expected = model;
++  ASSERT_TRUE(model.SelectNode(N(6)));
++  ASSERT_TRUE(model.SelectParent());
++  EXPECT_EQ(model.workspaces[0].selected_node, N(4));
++  ASSERT_TRUE(model.SelectChild());
++  EXPECT_EQ(model.workspaces[0].selected_node, N(5));
++  EXPECT_FALSE(model.SelectChild());
++  ASSERT_TRUE(model.SelectNode(N(7)));  // Hidden structural selection is legal.
++  EXPECT_EQ(model.ResolveLayoutTarget(), N(3));
++  ASSERT_TRUE(model.SelectParent());
++  EXPECT_EQ(model.ResolveLayoutTarget(), N(3));
++  ASSERT_TRUE(model.SelectParent());
++  EXPECT_FALSE(model.SelectParent());
++  expected.workspaces[0].selected_node = N(1);
++  ExpectSameState(expected, model);
++  EXPECT_TRUE(model.Validate());
++}
++
++TEST(WorkspaceLayoutModelTest, LayoutRoundTripPreservesExactNestedTopology) {
++  NodeId::Generator ids;
++  auto model = Sample();
++  ASSERT_TRUE(model.SelectNode(N(1)));
++  // The split's remembered child need not contain its active page.
++  Container(model, 1).selected_child = N(2);
++  auto expected = model;
++  for (auto layout :
++       {LayoutKind::kTabbed, LayoutKind::kVertical, LayoutKind::kHorizontal}) {
++    ASSERT_TRUE(model.SetLayout(layout, ids));
++    Container(expected, 1).layout = layout;
++    Container(expected, 1).selected_child = N(3);
++    ExpectSameState(expected, model);
++    EXPECT_TRUE(model.Validate());
++  }
++  // Ordinary layout changes do not allocate node IDs.
++  EXPECT_EQ(ids.GenerateNextId(), N(1));
++}
++
++TEST(WorkspaceLayoutModelTest, LeafLayoutTargetsImmediateParent) {
++  NodeId::Generator ids;
++  auto model = Sample();
++  ASSERT_TRUE(model.SelectNode(N(6)));
++  auto expected = model;
++  ASSERT_TRUE(model.SetLayout(LayoutKind::kTabbed, ids));
++  Container(expected, 4).layout = LayoutKind::kTabbed;
++  ExpectSameState(expected, model);
++  EXPECT_EQ(model.workspaces[0].active_leaf, N(5));
++  EXPECT_TRUE(model.Validate());
++}
++
++TEST(WorkspaceLayoutModelTest, ChildActivationExposesWholeSplitSubtree) {
++  NodeId::Generator ids;
++  auto model = Sample();
++  const auto topology = model;
++  ASSERT_TRUE(model.SelectNode(N(1)));
++  ASSERT_TRUE(model.SetLayout(LayoutKind::kTabbed, ids));
++  ASSERT_TRUE(model.SetSelectedChild(N(1), N(2)));
++  EXPECT_EQ(model.workspaces[0].active_leaf, N(2));
++  ASSERT_TRUE(model.SetSelectedChild(N(1), N(3)));
++  EXPECT_EQ(model.workspaces[0].active_leaf, N(5));
++  EXPECT_EQ(model.workspaces[0].selected_node, N(3));
++  EXPECT_EQ(Container(model, 3).selected_child, N(4));
++  EXPECT_EQ(Container(model, 4).layout, LayoutKind::kVertical);
++  EXPECT_EQ(Container(model, 4).children, (std::vector<NodeId>{N(5), N(6)}));
++  ASSERT_TRUE(model.SetSelectedChild(N(4), N(6)));
++  EXPECT_EQ(model.workspaces[0].active_leaf, N(6));
++  EXPECT_EQ(Container(model, 1).last_focused_leaf, N(6));
++  ASSERT_TRUE(model.SetSelectedChild(N(1), N(3)));
++  EXPECT_EQ(model.workspaces[0].active_leaf, N(6));
++  ExpectSameTopology(topology, model);
++  EXPECT_TRUE(model.Validate());
++}
++
++TEST(WorkspaceLayoutModelTest, ChildActivationRevealsHistoricalHiddenFocus) {
++  auto model = Sample();
++  Container(model, 3).selected_child = N(7);
++  model.workspaces[0].active_leaf = N(2);
++  // Remembered focus N(5) is hidden, but still a valid descendant.
++  ASSERT_TRUE(model.Validate());
++  auto expected = model;
++  ASSERT_TRUE(model.SetSelectedChild(N(1), N(3)));
++  expected.workspaces[0].active_leaf = N(5);
++  Container(expected, 3).selected_child = N(4);
++  ExpectSameState(expected, model);
++  EXPECT_TRUE(model.Validate());
++}
++
++TEST(WorkspaceLayoutModelTest, LayoutOnHiddenContainerDoesNotRevealIt) {
++  NodeId::Generator ids;
++  auto model = Sample();
++  Container(model, 3).selected_child = N(7);
++  model.workspaces[0].active_leaf = N(7);
++  ASSERT_TRUE(model.SelectNode(N(4)));
++  auto expected = model;
++  ASSERT_TRUE(model.SetLayout(LayoutKind::kTabbed, ids));
++  Container(expected, 4).layout = LayoutKind::kTabbed;
++  ExpectSameState(expected, model);
++  EXPECT_TRUE(model.Validate());
++  // Explicit activation inside that hidden container reveals all ancestors.
++  ASSERT_TRUE(model.SetSelectedChild(N(4), N(6)));
++  EXPECT_EQ(Container(model, 3).selected_child, N(4));
++  EXPECT_EQ(model.workspaces[0].active_leaf, N(6));
++  EXPECT_TRUE(model.Validate());
++}
++
++TEST(WorkspaceLayoutModelTest, SingletonRootWrapsOnceAndRetainsUnaryNode) {
++  for (auto layout :
++       {LayoutKind::kHorizontal, LayoutKind::kVertical, LayoutKind::kTabbed}) {
++    auto model = Sample();
++    model.active_workspace = W(2);
++    NodeId::Generator ids;  // Deliberately starts below existing node IDs.
++    EXPECT_EQ(model.ResolveLayoutTarget(), N(9));
++    ASSERT_TRUE(model.SetLayout(layout, ids));
++    EXPECT_EQ(model.nodes.size(), 10u);
++    EXPECT_EQ(model.workspaces[1].root, N(10));
++    EXPECT_EQ(model.workspaces[1].selected_node, N(10));
++    EXPECT_EQ(model.workspaces[1].active_leaf, N(9));
++    EXPECT_EQ(Container(model, 10).children, std::vector<NodeId>{N(9)});
++    EXPECT_EQ(Container(model, 10).split_weights, std::vector<double>{1});
++    EXPECT_EQ(Container(model, 10).last_focused_leaf, N(9));
++    EXPECT_TRUE(model.Validate());
++    const auto expected = model;
++    ASSERT_TRUE(model.SetLayout(layout, ids));
++    ExpectSameState(expected, model);
++    ASSERT_TRUE(model.SelectChild());
++    ASSERT_TRUE(model.SetLayout(layout, ids));
++    EXPECT_EQ(model.nodes.size(), 10u);
++    EXPECT_EQ(ids.GenerateNextId(), N(11));
++    EXPECT_TRUE(model.Validate());
++  }
++}
++
++TEST(WorkspaceLayoutModelTest, EmptyTargetsAndRejectedMutationsAreAtomic) {
++  NodeId::Generator ids;
++  auto model = Sample();
++  const auto before = model;
++  EXPECT_FALSE(model.SelectNode({}));
++  EXPECT_FALSE(model.SelectNode(N(99)));
++  EXPECT_FALSE(model.SelectNode(N(9)));
++  EXPECT_FALSE(model.SetSelectedChild(N(9), N(9)));
++  EXPECT_FALSE(model.SetSelectedChild(N(2), N(2)));
++  EXPECT_FALSE(model.SetSelectedChild(N(1), N(5)));
++  EXPECT_FALSE(model.SetSelectedChild(N(99), N(2)));
++  EXPECT_FALSE(model.SetLayout(static_cast<LayoutKind>(99), ids));
++  ExpectSameState(before, model);
++  for (auto empty : {WorkspaceLayoutModel(), Sample()}) {
++    if (!empty.workspaces.empty()) {
++      empty.active_workspace = W(3);
++    }
++    const auto expected = empty;
++    EXPECT_FALSE(empty.ResolveLayoutTarget());
++    EXPECT_FALSE(empty.SelectParent());
++    EXPECT_FALSE(empty.SelectChild());
++    EXPECT_FALSE(empty.SelectNode(N(1)));
++    EXPECT_FALSE(empty.SetSelectedChild(N(1), N(2)));
++    EXPECT_FALSE(empty.SetLayout(LayoutKind::kTabbed, ids));
++    ExpectSameState(expected, empty);
++    EXPECT_TRUE(empty.Validate());
++  }
++  Container(model, 4).children[0] = N(4);  // Invalid cyclic candidate.
++  const auto invalid = model;
++  EXPECT_FALSE(model.SelectNode(N(1)));
++  EXPECT_FALSE(model.SelectParent());
++  EXPECT_FALSE(model.SelectChild());
++  EXPECT_FALSE(model.ResolveLayoutTarget());
++  EXPECT_FALSE(model.SetLayout(LayoutKind::kHorizontal, ids));
++  EXPECT_FALSE(model.SetSelectedChild(N(1), N(2)));
++  ExpectSameState(invalid, model);
++  EXPECT_EQ(ids.GenerateNextId(), N(1));
 +}
 +
 +}  // namespace
