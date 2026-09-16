@@ -1,17 +1,19 @@
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -2771,6 +2771,8 @@ static_library("ui") {
+@@ -2771,6 +2771,10 @@ static_library("ui") {
        "views/frame/web_contents_close_handler.cc",
        "views/frame/web_contents_close_handler.h",
        "views/frame/web_contents_close_handler_delegate.h",
 +      "views/frame/workspace_contents_view.cc",
 +      "views/frame/workspace_contents_view.h",
++      "views/frame/workspace_tabbed_header_view.cc",
++      "views/frame/workspace_tabbed_header_view.h",
        "views/global_error_bubble_view.cc",
        "views/global_error_bubble_view.h",
        "views/helium/frame_corner_radius.cc",
 --- /dev/null
 +++ b/chrome/browser/ui/views/frame/workspace_contents_view.cc
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,221 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -33,6 +35,9 @@
 +#include "chrome/browser/ui/views/frame/contents_web_view.h"
 +#include "content/public/browser/web_contents.h"
 +#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/color/color_id.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/border.h"
 +
 +namespace helium::workspaces {
 +
@@ -56,7 +61,8 @@
 +bool WorkspaceContentsView::Present(
 +    const WorkspaceLayoutModel& model,
 +    const LayoutMetrics& metrics,
-+    const std::map<TabKey, content::WebContents*>& contents) {
++    const std::map<TabKey, content::WebContents*>& contents,
++    const WorkspaceTabbedHeaderView::Titles& titles) {
 +  if (presenting_) {
 +    return false;
 +  }
@@ -77,6 +83,19 @@
 +    return false;
 +  }
 +
++  // Use the same shared-edge conversion for pages, headers and selection.
++  auto dip_rect = [&](const LayoutRect& r) {
++    auto edge = [scale](int value, int pixels, int dips) {
++      return value == pixels
++                 ? dips
++                 : std::clamp(static_cast<int>(std::round(value / scale)), 0,
++                              dips);
++    };
++    const int x = edge(r.x, pixel_width, width());
++    const int y = edge(r.y, pixel_height, height());
++    return gfx::Rect(x, y, edge(r.x + r.width, pixel_width, width()) - x,
++                     edge(r.y + r.height, pixel_height, height()) - y);
++  };
 +  std::vector<content::WebContents*> resolved;
 +  std::vector<gfx::Rect> bounds;
 +  std::set<content::WebContents*> unique;
@@ -87,25 +106,60 @@
 +        !unique.insert(it->second).second) {
 +      return false;
 +    }
-+    // Round shared edges, never widths independently. Pin viewport edges to
-+    // their original DIPs, including sub-unit scales and zero-area projections.
-+    auto edge = [scale](int value, int pixels, int dips) {
-+      if (value == pixels) {
-+        return dips;
-+      }
-+      return std::clamp(static_cast<int>(std::round(value / scale)), 0, dips);
-+    };
-+    const auto& r = leaf.bounds;
-+    const int x = edge(r.x, pixel_width, width());
-+    const int y = edge(r.y, pixel_height, height());
-+    const int right = edge(r.x + r.width, pixel_width, width());
-+    const int bottom = edge(r.y + r.height, pixel_height, height());
-+    if (right <= x || bottom <= y) {
++    const auto rect = dip_rect(leaf.bounds);
++    if (rect.IsEmpty()) {
 +      // Do not claim a displayed leaf that Views cannot represent in DIPs.
 +      return false;
 +    }
-+    bounds.emplace_back(x, y, right - x, bottom - y);
++    bounds.push_back(rect);
 +    resolved.push_back(it->second);
++  }
++
++  std::vector<std::unique_ptr<WorkspaceTabbedHeaderView>> headers;
++  for (const auto& header : geometry.headers) {
++    auto view = std::make_unique<WorkspaceTabbedHeaderView>(
++        WorkspaceTabbedHeaderView::SelectChild());
++    if (!view->Update(model, header.container, titles)) {
++      return false;
++    }
++    view->SetBoundsRect(dip_rect(header.bounds));
++    headers.push_back(std::move(view));
++  }
++
++  // Structural selection outlines its visible subtree, never the active page
++  // by proxy. Hidden selections have no rectangle. Suppress container outlines
++  // in constrained mode rather than suggesting the full subtree is displayed.
++  std::set<NodeId> selected_subtree;
++  for (const auto& workspace : model.workspaces) {
++    if (workspace.id != model.active_workspace || !workspace.selected_node) {
++      continue;
++    }
++    if (geometry.constrained &&
++        workspace.selected_node != workspace.active_leaf) {
++      break;
++    }
++    std::vector<NodeId> pending{workspace.selected_node};
++    while (!pending.empty()) {
++      const NodeId id = pending.back();
++      pending.pop_back();
++      selected_subtree.insert(id);
++      if (const auto* node = std::get_if<ContainerState>(&model.nodes.at(id))) {
++        pending.insert(pending.end(), node->children.begin(),
++                       node->children.end());
++      }
++    }
++    break;
++  }
++  gfx::Rect selection;
++  for (const auto& leaf : geometry.leaves) {
++    if (selected_subtree.contains(leaf.node)) {
++      selection.Union(dip_rect(leaf.bounds));
++    }
++  }
++  for (const auto& header : geometry.headers) {
++    if (selected_subtree.contains(header.container)) {
++      selection.Union(dip_rect(header.bounds));
++    }
 +  }
 +
 +  // Detach all old contents before attaching any new ones: a selected subtree
@@ -121,10 +175,49 @@
 +      sad_tab->ReinstallInWebView();
 +    }
 +  }
++  for (auto& header : headers) {
++    headers_.push_back(AddChildView(std::move(header)));
++  }
++  if (!selection.IsEmpty()) {
++    // A thick square outline of the structural subtree, independent of native
++    // rounded page-focus borders and the header's selected-child bottom rule.
++    selection_outline_ = AddChildView(std::make_unique<views::View>());
++    selection_outline_->SetCanProcessEventsWithinSubtree(false);
++    selection_outline_->GetViewAccessibility().SetIsIgnored(true);
++    selection_outline_->SetBorder(
++        views::CreateSolidBorder(4, ui::kColorFocusableBorderUnfocused));
++    selection_outline_->SetBoundsRect(selection);
++  }
 +  return true;
 +}
 +
++void WorkspaceContentsView::UpdateTitles(
++    const WorkspaceTabbedHeaderView::Titles& titles) {
++  for (auto* header : GetHeaders()) {
++    header->UpdateTitles(titles);
++  }
++}
++
++std::vector<WorkspaceTabbedHeaderView*> WorkspaceContentsView::GetHeaders()
++    const {
++  return {headers_.begin(), headers_.end()};
++}
++
++gfx::Rect WorkspaceContentsView::selection_bounds() const {
++  return selection_outline_ ? selection_outline_->bounds() : gfx::Rect();
++}
++
 +void WorkspaceContentsView::Clear() {
++  if (selection_outline_) {
++    auto* outline = selection_outline_.get();
++    selection_outline_ = nullptr;
++    RemoveChildViewT(outline);
++  }
++  while (!headers_.empty()) {
++    auto* header = headers_.back().get();
++    headers_.pop_back();
++    RemoveChildViewT(header);
++  }
 +  while (!containers_.empty()) {
 +    auto* container = containers_.back().get();
 +    containers_.pop_back();
@@ -144,7 +237,7 @@
 +}  // namespace helium::workspaces
 --- /dev/null
 +++ b/chrome/browser/ui/views/frame/workspace_contents_view.h
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,71 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -158,6 +251,7 @@
 +#include "base/feature_list.h"
 +#include "base/memory/raw_ptr.h"
 +#include "chrome/browser/ui/helium/workspaces/workspace_layout_geometry.h"
++#include "chrome/browser/ui/views/frame/workspace_tabbed_header_view.h"
 +#include "ui/views/view.h"
 +
 +class BrowserView;
@@ -176,8 +270,8 @@
 +// not attached to another WebView and Clear() before transferring them
 +// elsewhere. Input is resolved afresh per presentation; the model never owns
 +// WebContents. Views event handling is disabled, but this is NOT a native-input
-+// or focus isolation boundary. Controlled tests only: activation, foreground and
-+// modal-host adapters must exist before browser use. No primary-window AX
++// or focus isolation boundary. Controlled tests only: activation, foreground
++// and modal-host adapters must exist before browser use. No primary-window AX
 +// designation is made here.
 +class WorkspaceContentsView : public views::View {
 +  METADATA_HEADER(WorkspaceContentsView, views::View)
@@ -188,10 +282,17 @@
 +
 +  // Uses this view's current DIP size. Call again after resize/scale changes.
 +  // Validates the entire displayed binding set before changing native views.
-+  // Header/divider rectangles are reserved but not rendered in this checkpoint.
++  // Native headers are display-only here; all host events remain suppressed.
++  // Dividers remain reserved for T08. Titles may include hidden page keys.
 +  bool Present(const WorkspaceLayoutModel& model,
 +               const LayoutMetrics& metrics,
-+               const std::map<TabKey, content::WebContents*>& contents);
++               const std::map<TabKey, content::WebContents*>& contents,
++               const WorkspaceTabbedHeaderView::Titles& titles = {});
++  // Refresh labels without detaching pages or changing selection.
++  void UpdateTitles(const WorkspaceTabbedHeaderView::Titles& titles);
++  std::vector<WorkspaceTabbedHeaderView*> GetHeaders() const;
++  // Empty if selection is hidden or a container is in constrained projection.
++  gfx::Rect selection_bounds() const;
 +  void Clear();
 +
 +  // Tree order, only currently attached leaves. Pointers expire on
@@ -201,6 +302,8 @@
 + private:
 +  raw_ptr<BrowserView> browser_view_;
 +  std::vector<raw_ptr<ContentsContainerView>> containers_;
++  std::vector<raw_ptr<WorkspaceTabbedHeaderView>> headers_;
++  raw_ptr<views::View> selection_outline_ = nullptr;
 +  bool presenting_ = false;
 +};
 +
@@ -208,7 +311,7 @@
 +#endif  // CHROME_BROWSER_UI_VIEWS_FRAME_WORKSPACE_CONTENTS_VIEW_H_
 --- /dev/null
 +++ b/chrome/browser/ui/views/frame/workspace_contents_view_browsertest.cc
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,259 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -220,6 +323,7 @@
 +
 +#include "base/functional/bind.h"
 +#include "base/functional/callback_helpers.h"
++#include "base/test/bind.h"
 +#include "base/test/scoped_feature_list.h"
 +#include "chrome/browser/profiles/profile.h"
 +#include "chrome/browser/ui/browser.h"
@@ -232,6 +336,11 @@
 +#include "content/public/test/browser_test.h"
 +#include "content/public/test/browser_test_utils.h"
 +#include "testing/gtest/include/gtest/gtest.h"
++#include "ui/accessibility/ax_action_data.h"
++#include "ui/accessibility/ax_node_data.h"
++#include "ui/events/event.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/controls/button/label_button.h"
 +#include "ui/views/test/views_test_utils.h"
 +#include "url/gurl.h"
 +
@@ -323,15 +432,31 @@
 +  const NodeId root = model.workspaces.front().root;
 +  ASSERT_TRUE(model.SelectNode(root));
 +  ASSERT_TRUE(model.SetLayout(LayoutKind::kTabbed, node_ids));
-+  const auto& children =
-+      std::get<ContainerState>(model.nodes.at(root)).children;
++  const auto children = std::get<ContainerState>(model.nodes.at(root)).children;
 +  const NodeId split = children.back();
 +  ASSERT_TRUE(model.SetSelectedChild(root, split));
 +  EXPECT_TRUE(host->Present(model, metrics, bindings));
++  ASSERT_EQ(host->GetHeaders().size(), 1u);
++  EXPECT_EQ(host->GetHeaders()[0]->child_ids(), children);
++  EXPECT_EQ(host->GetHeaders()[0]->selected_child(), split);
++  EXPECT_FALSE(host->GetHeaders()[0]->children()[0]->GetEnabled());
++  EXPECT_FALSE(host->selection_bounds().IsEmpty());
++  const auto old_containers = host->GetDisplayedContainers();
++  host->UpdateTitles({{tabs[0], u"Email"}, {tabs[2], u"Updated title"}});
++  EXPECT_EQ(host->GetDisplayedContainers(), old_containers);
 +  containers = host->GetDisplayedContainers();
 +  ASSERT_EQ(containers.size(), 2u);
 +  EXPECT_EQ(containers[0]->contents_view()->web_contents(), pages[1].get());
 +  EXPECT_EQ(containers[1]->contents_view()->web_contents(), pages[2].get());
++  const NodeId active = model.workspaces.front().active_leaf;
++  ASSERT_TRUE(model.SelectNode(root));
++  EXPECT_TRUE(host->Present(model, metrics, bindings));
++  EXPECT_EQ(host->selection_bounds(), host->GetLocalBounds());
++  EXPECT_EQ(model.workspaces.front().active_leaf, active);
++  ASSERT_TRUE(model.SelectNode(first));  // Hidden structural selection.
++  EXPECT_TRUE(host->Present(model, metrics, bindings));
++  EXPECT_TRUE(host->selection_bounds().IsEmpty());
++  EXPECT_EQ(model.workspaces.front().active_leaf, active);
 +  ASSERT_TRUE(model.SetSelectedChild(root, first));
 +  EXPECT_TRUE(host->Present(model, metrics, bindings));
 +  ASSERT_EQ(host->GetDisplayedContainers().size(), 1u);
@@ -340,11 +465,108 @@
 +  host->SetSize(gfx::Size());
 +  EXPECT_TRUE(host->Present(model, metrics, bindings));
 +  EXPECT_TRUE(host->GetDisplayedContainers().empty());
++  EXPECT_TRUE(host->GetHeaders().empty());
++  EXPECT_TRUE(host->selection_bounds().IsEmpty());
 +  EXPECT_EQ(ordinary->web_contents(), ordinary_contents);
 +  remove_host.RunAndReset();
 +  for (const auto& page : pages) {
 +    EXPECT_FALSE(page->IsBeingDestroyed());
 +  }
++}
++
++// This is the explicit input boundary: a standalone header with NO page hosts.
++// Do not enable input on WorkspaceContentsView to exercise header callbacks.
++IN_PROC_BROWSER_TEST_F(WorkspaceContentsViewBrowserTest,
++                       ImmediateSubtreeSelectorsAndNativeActions) {
++  WorkspaceLayoutModel model;
++  WorkspaceId::Generator workspace_ids;
++  NodeId::Generator node_ids;
++  TabKey::Generator tab_ids;
++  const TabKey email = tab_ids.GenerateNextId();
++  const TabKey a = tab_ids.GenerateNextId();
++  const TabKey b = tab_ids.GenerateNextId();
++  model.CreateWorkspace(email, workspace_ids, node_ids);
++  const NodeId email_leaf = model.workspaces.front().active_leaf;
++  ASSERT_TRUE(
++      model.SplitLeaf(email_leaf, LayoutKind::kHorizontal, a, node_ids));
++  const NodeId a_leaf = model.workspaces.front().active_leaf;
++  ASSERT_TRUE(model.SplitLeaf(a_leaf, LayoutKind::kVertical, b, node_ids));
++  const NodeId root = model.workspaces.front().root;
++  ASSERT_TRUE(model.SelectNode(root));
++  ASSERT_TRUE(model.SetLayout(LayoutKind::kTabbed, node_ids));
++  const auto children = std::get<ContainerState>(model.nodes.at(root)).children;
++  ASSERT_EQ(children.size(), 2u);
++  ASSERT_TRUE(model.SetSelectedChild(root, email_leaf));
++
++  NodeId requested_container;
++  NodeId requested_child;
++  int requests = 0;
++  auto surface = std::make_unique<WorkspaceTabbedHeaderView>(
++      base::BindLambdaForTesting([&](NodeId container, NodeId child) {
++        requested_container = container;
++        requested_child = child;
++        ++requests;
++      }));
++  auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
++  auto* header = browser_view->AddChildView(std::move(surface));
++  base::ScopedClosureRunner remove_header(base::BindOnce(
++      [](BrowserView* parent, WorkspaceTabbedHeaderView* child) {
++        parent->RemoveChildViewT(child);
++      },
++      browser_view, header));
++  header->SetBounds(0, 0, 600, 30);
++  ASSERT_TRUE(header->Update(model, root, {{email, u"Email"}, {b, u"B"}}));
++  views::test::RunScheduledLayout(header);
++  EXPECT_EQ(header->child_ids(), children);
++  ASSERT_EQ(header->children().size(), 2u);
++  auto* split_button = static_cast<views::LabelButton*>(header->children()[1]);
++  EXPECT_NE(split_button->GetText().find(u"Layout:"), std::u16string::npos);
++  ui::AXNodeData data;
++  split_button->GetViewAccessibility().GetAccessibleNodeData(&data);
++  EXPECT_EQ(data.role, ax::mojom::Role::kTab);
++  EXPECT_FALSE(data.GetBoolAttribute(ax::mojom::BoolAttribute::kSelected));
++
++  // Native pointer dispatch and AX default action share the same ID contract.
++  ui::MouseEvent press(ui::EventType::kMousePressed, gfx::PointF(5, 5),
++                       gfx::PointF(5, 5), base::TimeTicks(),
++                       ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON);
++  EXPECT_TRUE(split_button->OnMousePressed(press));
++  ui::MouseEvent release(ui::EventType::kMouseReleased, gfx::PointF(5, 5),
++                         gfx::PointF(5, 5), base::TimeTicks(),
++                         ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON);
++  split_button->OnMouseReleased(release);
++  EXPECT_EQ(requests, 1);
++  EXPECT_EQ(requested_container, root);
++  EXPECT_EQ(requested_child, children[1]);
++  ui::AXActionData action;
++  action.action = ax::mojom::Action::kDoDefault;
++  EXPECT_TRUE(split_button->HandleAccessibleAction(action));
++  EXPECT_EQ(requests, 2);
++  // Dispatch is a request only; until the owner commits, selection stays put.
++  EXPECT_EQ(header->selected_child(), email_leaf);
++  EXPECT_EQ(model.workspaces.front().active_leaf, email_leaf);
++  ASSERT_TRUE(model.SetSelectedChild(requested_container, requested_child));
++  ASSERT_TRUE(header->Update(model, root, {}));
++  EXPECT_EQ(header->selected_child(), children[1]);
++  split_button = static_cast<views::LabelButton*>(header->children()[1]);
++  data = ui::AXNodeData();
++  split_button->GetViewAccessibility().GetAccessibleNodeData(&data);
++  EXPECT_TRUE(data.GetBoolAttribute(ax::mojom::BoolAttribute::kSelected));
++  EXPECT_NE(split_button->GetText().find(u"Untitled page"),
++            std::u16string::npos);
++  header->UpdateTitles({{b, u"New\n\u202etitle"}});
++  EXPECT_NE(split_button->GetText().find(u"Newtitle"), std::u16string::npos);
++  EXPECT_FALSE(header->Update(model, NodeId(), {}));
++  EXPECT_FALSE(header->Update(model, email_leaf, {}));
++  EXPECT_EQ(header->child_ids(), children);
++  header->UpdateTitles({{b, std::u16string(1000, u'x')}});
++  EXPECT_LT(split_button->GetText().size(), 180u);
++  // A valid tabbed node hidden behind its ancestor is not a visible selector.
++  ASSERT_TRUE(model.SelectNode(children[1]));
++  ASSERT_TRUE(model.SetLayout(LayoutKind::kTabbed, node_ids));
++  ASSERT_TRUE(model.SetSelectedChild(root, email_leaf));
++  EXPECT_FALSE(header->Update(model, children[1], {}));
++  EXPECT_EQ(header->container(), root);
 +}
 +
 +}  // namespace
@@ -359,3 +581,235 @@
        "../browser/ui/views/hats/hats_browsertest.cc",
        "../browser/ui/views/incognito_clear_browsing_data_dialog_browsertest.cc",
        "../browser/ui/views/infobars/confirm_infobar_custom_layout_browsertest.cc",
+--- /dev/null
++++ b/chrome/browser/ui/views/frame/workspace_tabbed_header_view.cc
+@@ -0,0 +1,160 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/views/frame/workspace_tabbed_header_view.h"
++
++#include <algorithm>
++#include <memory>
++#include <utility>
++
++#include "base/functional/bind.h"
++#include "base/i18n/rtl.h"
++#include "ui/accessibility/ax_enums.mojom.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/color/color_id.h"
++#include "ui/gfx/text_elider.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/border.h"
++#include "ui/views/controls/button/label_button.h"
++#include "ui/views/layout/box_layout.h"
++
++namespace helium::workspaces {
++namespace {
++
++std::u16string SafeTitle(const std::u16string& title) {
++  // Bound untrusted page text before shaping/AX. Drop controls, including bidi
++  // overrides; titles are literal text, never markup or accelerator labels.
++  std::u16string result;
++  for (char16_t ch : title) {
++    if (result.size() == 160) {
++      break;
++    }
++    if (ch >= 0x20 && !(ch >= 0x7f && ch <= 0x9f) && ch != 0x061c &&
++        ch != 0x200e && ch != 0x200f && !(ch >= 0x2028 && ch <= 0x202e) &&
++        !(ch >= 0x2066 && ch <= 0x2069)) {
++      result.push_back(ch);
++    }
++  }
++  // Do not leave a truncated UTF-16 surrogate pair.
++  if (!result.empty() && result.back() >= 0xd800 && result.back() <= 0xdbff) {
++    result.pop_back();
++  }
++  if (result.find_first_not_of(u" \t") == std::u16string::npos) {
++    result = u"Untitled page";
++  }
++  base::i18n::SanitizeUserSuppliedString(&result);
++  return result;
++}
++
++}  // namespace
++
++WorkspaceTabbedHeaderView::WorkspaceTabbedHeaderView(SelectChild select_child)
++    : select_child_(std::move(select_child)) {
++  auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kHorizontal));
++  layout->SetDefaultFlex(1);
++  GetViewAccessibility().SetRole(ax::mojom::Role::kTabList);
++  GetViewAccessibility().SetName(u"Container children");
++}
++
++WorkspaceTabbedHeaderView::~WorkspaceTabbedHeaderView() = default;
++
++bool WorkspaceTabbedHeaderView::Update(const WorkspaceLayoutModel& model,
++                                       NodeId container,
++                                       const Titles& titles) {
++  if (!model.Validate()) {
++    return false;
++  }
++  // Only containers reached through the selected paths of the active workspace
++  // can own a visible header. IDs from inactive/hidden subtrees are rejected.
++  std::vector<NodeId> pending;
++  for (const auto& workspace : model.workspaces) {
++    if (workspace.id == model.active_workspace && workspace.root) {
++      pending.push_back(workspace.root);
++    }
++  }
++  bool visible = false;
++  while (!pending.empty()) {
++    NodeId id = pending.back();
++    pending.pop_back();
++    if (id == container) {
++      visible = true;
++      break;
++    }
++    if (const auto* node = std::get_if<ContainerState>(&model.nodes.at(id))) {
++      if (node->layout == LayoutKind::kTabbed) {
++        pending.push_back(node->selected_child);
++      } else {
++        pending.insert(pending.end(), node->children.begin(),
++                       node->children.end());
++      }
++    }
++  }
++  auto it = model.nodes.find(container);
++  const auto* node = it == model.nodes.end()
++                         ? nullptr
++                         : std::get_if<ContainerState>(&it->second);
++  if (!visible || !node || node->layout != LayoutKind::kTabbed) {
++    return false;
++  }
++  weak_factory_.InvalidateWeakPtrs();
++  buttons_.clear();
++  RemoveAllChildViews();
++  container_ = container;
++  selected_child_ = node->selected_child;
++  child_ids_ = node->children;
++  title_keys_.clear();
++  subtrees_.clear();
++  for (NodeId child : child_ids_) {
++    const auto* subtree = std::get_if<ContainerState>(&model.nodes.at(child));
++    NodeId title_leaf = subtree ? subtree->last_focused_leaf : child;
++    title_keys_.push_back(std::get<LeafState>(model.nodes.at(title_leaf)).tab);
++    subtrees_.push_back(subtree != nullptr);
++    auto* button = AddChildView(std::make_unique<views::LabelButton>(
++        base::BindRepeating(&WorkspaceTabbedHeaderView::RequestSelection,
++                            weak_factory_.GetWeakPtr(), child)));
++    buttons_.push_back(button);
++    button->SetEnabled(!select_child_.is_null());
++    button->SetFocusBehavior(FocusBehavior::ALWAYS);
++    button->SetElideBehavior(gfx::ELIDE_TAIL);
++    button->GetViewAccessibility().SetRole(ax::mojom::Role::kTab);
++    button->GetViewAccessibility().SetIsSelected(child == selected_child_);
++    // A bottom rule indicates selected CHILD, not structural selection or page
++    // focus. The latter keeps native button focus-ring behavior.
++    button->SetBorder(views::CreateSolidSidedBorder(
++        gfx::Insets::TLBR(0, 0, child == selected_child_ ? 3 : 0, 0),
++        ui::kColorFocusableBorderFocused));
++  }
++  UpdateTitles(titles);
++  return true;
++}
++
++void WorkspaceTabbedHeaderView::UpdateTitles(const Titles& titles) {
++  for (size_t i = 0; i < buttons_.size(); ++i) {
++    auto it = titles.find(title_keys_[i]);
++    std::u16string title = SafeTitle(it == titles.end() ? u"" : it->second);
++    if (subtrees_[i]) {
++      title = u"Layout: " + title;
++    }
++    buttons_[i]->SetText(title);
++    buttons_[i]->GetViewAccessibility().SetName(title);
++    buttons_[i]->SetTooltipText(title);
++  }
++}
++
++void WorkspaceTabbedHeaderView::RequestSelection(NodeId child) {
++  if (!select_child_ || !std::ranges::contains(child_ids_, child)) {
++    return;
++  }
++  // The callback may synchronously rebuild/delete this surface. Copy it, and
++  // do not access members after dispatch. Weak button callbacks expire on
++  // Update.
++  auto callback = select_child_;
++  callback.Run(container_, child);
++}
++
++BEGIN_METADATA(WorkspaceTabbedHeaderView)
++END_METADATA
++
++}  // namespace helium::workspaces
+--- /dev/null
++++ b/chrome/browser/ui/views/frame/workspace_tabbed_header_view.h
+@@ -0,0 +1,66 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_FRAME_WORKSPACE_TABBED_HEADER_VIEW_H_
++#define CHROME_BROWSER_UI_VIEWS_FRAME_WORKSPACE_TABBED_HEADER_VIEW_H_
++
++#include <map>
++#include <string>
++#include <vector>
++
++#include "base/functional/callback.h"
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "chrome/browser/ui/helium/workspaces/workspace_layout_model.h"
++#include "ui/views/view.h"
++
++namespace views {
++class LabelButton;
++}
++
++namespace helium::workspaces {
++
++// Native, contents-free selector surface. One button per IMMEDIATE child, not
++// per leaf. A callback requests a mutation; it never changes model/activation.
++// The receiver must revalidate IDs against its current generation/workspace,
++// reconcile browser activation, then present the resulting snapshot. A null
++// callback makes the surface display-only (the incomplete host uses this).
++class WorkspaceTabbedHeaderView : public views::View {
++  METADATA_HEADER(WorkspaceTabbedHeaderView, views::View)
++
++ public:
++  using Titles = std::map<TabKey, std::u16string>;
++  using SelectChild = base::RepeatingCallback<void(NodeId, NodeId)>;
++
++  explicit WorkspaceTabbedHeaderView(SelectChild select_child);
++  ~WorkspaceTabbedHeaderView() override;
++
++  // Reject invalid/non-tabbed/hidden containers without changing the surface.
++  // Snapshots contain only stable IDs and copied labels; no model/page
++  // pointers.
++  bool Update(const WorkspaceLayoutModel& model,
++              NodeId container,
++              const Titles& titles);
++  // Caller supplies current titles, including hidden children. Missing titles
++  // have a safe fallback; no WebContents observer or owner lives here.
++  void UpdateTitles(const Titles& titles);
++  NodeId container() const { return container_; }
++  NodeId selected_child() const { return selected_child_; }
++  const std::vector<NodeId>& child_ids() const { return child_ids_; }
++
++ private:
++  void RequestSelection(NodeId child);
++
++  SelectChild select_child_;
++  NodeId container_;
++  NodeId selected_child_;
++  std::vector<NodeId> child_ids_;
++  std::vector<TabKey> title_keys_;
++  std::vector<bool> subtrees_;
++  std::vector<raw_ptr<views::LabelButton>> buttons_;
++  base::WeakPtrFactory<WorkspaceTabbedHeaderView> weak_factory_{this};
++};
++
++}  // namespace helium::workspaces
++#endif  // CHROME_BROWSER_UI_VIEWS_FRAME_WORKSPACE_TABBED_HEADER_VIEW_H_
