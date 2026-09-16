@@ -736,3 +736,499 @@
        "../browser/ui/views/frame/workspace_contents_view_browsertest.cc",
        "../browser/ui/views/hats/hats_browsertest.cc",
        "../browser/ui/views/incognito_clear_browsing_data_dialog_browsertest.cc",
+--- a/chrome/browser/ui/views/frame/contents_border_controller.cc
++++ b/chrome/browser/ui/views/frame/contents_border_controller.cc
+@@ -86,6 +86,8 @@ void ContentsBorderController::ContentsC
+ void ContentsBorderController::ContentsContainerViewBorderController::
+     OnWebContentsDetached(views::WebView* web_view) {
+   tab_capture_change_subscription_ = base::CallbackListSubscription();
++  tab_capture_location_change_subscription_ = base::CallbackListSubscription();
++  OnTabCaptureLocationChange(std::nullopt);
+   OnTabCaptureChange(false);
+ }
+ 
+--- a/chrome/browser/ui/views/frame/workspace_contents_view.cc
++++ b/chrome/browser/ui/views/frame/workspace_contents_view.cc
+@@ -9,6 +9,7 @@
+ #include <limits>
+ #include <memory>
+ #include <set>
++#include <utility>
+ 
+ #include "base/auto_reset.h"
+ #include "base/check.h"
+@@ -47,7 +48,11 @@ bool WorkspaceContentsView::Present(
+     const LayoutMetrics& metrics,
+     const std::map<TabKey, content::WebContents*>& contents,
+     const WorkspaceTabbedHeaderView::Titles& titles) {
+-  if (presenting_) {
++  if (presenting_ || std::ranges::any_of(dividers_, [](const auto& divider) {
++        return divider->is_resizing();
++      })) {
++    // Input is still disabled on this host. Until the controller supplies the
++    // gesture baseline/invalidation transaction, never retire a captured view.
+     return false;
+   }
+   base::AutoReset<bool> presenting(&presenting_, true);
+@@ -80,11 +85,13 @@ bool WorkspaceContentsView::Present(
+     return gfx::Rect(x, y, edge(r.x + r.width, pixel_width, width()) - x,
+                      edge(r.y + r.height, pixel_height, height()) - y);
+   };
+-  std::vector<content::WebContents*> resolved;
++  std::vector<TabKey> keys;
++  std::map<TabKey, content::WebContents*> resolved;
+   std::vector<gfx::Rect> bounds;
+   std::set<content::WebContents*> unique;
+   for (const auto& leaf : geometry.leaves) {
+-    auto it = contents.find(std::get<LeafState>(model.nodes.at(leaf.node)).tab);
++    const TabKey key = std::get<LeafState>(model.nodes.at(leaf.node)).tab;
++    auto it = contents.find(key);
+     if (it == contents.end() || !it->second ||
+         it->second->GetBrowserContext() != browser_view_->GetProfile() ||
+         !unique.insert(it->second).second) {
+@@ -96,7 +103,8 @@ bool WorkspaceContentsView::Present(
+       return false;
+     }
+     bounds.push_back(rect);
+-    resolved.push_back(it->second);
++    keys.push_back(key);
++    resolved.emplace(key, it->second);
+   }
+ 
+   std::vector<std::unique_ptr<WorkspaceTabbedHeaderView>> headers;
+@@ -159,26 +167,100 @@ bool WorkspaceContentsView::Present(
+     }
+   }
+ 
+-  // Detach all old contents before attaching any new ones: a selected subtree
+-  // can reorder/reuse the same externally owned pages in different slots.
+-  Clear();
+-  for (size_t i = 0; i < resolved.size(); ++i) {
+-    auto* container =
+-        AddChildView(std::make_unique<ContentsContainerView>(browser_view_));
++  // Retain native hosts by tab identity, not by geometry slot or WebContents.
++  // A focus/weight/viewport change must not detach still-displayed pages (which
++  // would hide renderers and discard native focus). Replacement retains the
++  // container but replaces its attachment. Detach ALL outgoing/replaced pages
++  // before ANY attachment, including when callers move contents between keys.
++  for (auto& [key, host] : leaves_) {
++    auto it = resolved.find(key);
++    auto* view = host.container->contents_view();
++    if (it == resolved.end() || view->web_contents() != it->second) {
++      view->SetWebContents(nullptr);
++    }
++  }
++  containers_.clear();
++  for (auto it = leaves_.begin(); it != leaves_.end();) {
++    if (resolved.contains(it->first)) {
++      ++it;
++      continue;
++    }
++    auto* container = it->second.container.get();
++    // Drop capture/location and attachment callbacks before deleting the view.
++    it = leaves_.erase(it);
++    RemoveChildViewT(container);
++  }
++  for (size_t i = 0; i < keys.size(); ++i) {
++    const TabKey key = keys[i];
++    auto [it, inserted] = leaves_.try_emplace(key);
++    auto& host = it->second;
++    if (inserted) {
++      host.container =
++          AddChildView(std::make_unique<ContentsContainerView>(browser_view_));
++      host.border_controller = std::make_unique<
++          ContentsBorderController::ContentsContainerViewBorderController>(
++          host.container, browser_view_);
++    }
++    auto* container = host.container.get();
+     containers_.push_back(container);
++    ReorderChildView(container, i);
+     container->SetBoundsRect(bounds[i]);
+-    container->contents_view()->SetWebContents(resolved[i]);
+-    if (auto* sad_tab = SadTabHelper::FromWebContents(resolved[i])) {
+-      sad_tab->ReinstallInWebView();
++    auto* page = resolved.at(key);
++    if (container->contents_view()->web_contents() != page) {
++      container->contents_view()->SetWebContents(page);
++      if (auto* sad_tab = SadTabHelper::FromWebContents(page)) {
++        sad_tab->ReinstallInWebView();
++      }
+     }
+   }
++  auto old_headers = std::move(headers_);
++  headers_.clear();
+   for (auto& header : headers) {
+-    headers_.push_back(AddChildView(std::move(header)));
++    auto old = std::ranges::find_if(old_headers, [&](const auto& candidate) {
++      return candidate->container() == header->container();
++    });
++    if (old == old_headers.end()) {
++      headers_.push_back(AddChildView(std::move(header)));
++    } else {
++      auto* retained = old->get();
++      old_headers.erase(old);
++      CHECK(retained->Update(model, header->container(), titles));
++      retained->SetBoundsRect(header->bounds());
++      headers_.push_back(retained);
++    }
++    ReorderChildView(headers_.back(), containers_.size() + headers_.size() - 1);
++  }
++  while (!old_headers.empty()) {
++    auto* retired = old_headers.back().get();
++    old_headers.pop_back();
++    RemoveChildViewT(retired);
+   }
++  auto old_dividers = std::move(dividers_);
++  dividers_.clear();
+   for (auto& divider : dividers) {
+-    dividers_.push_back(AddChildView(std::move(divider)));
++    auto old = std::ranges::find_if(old_dividers, [&](const auto& candidate) {
++      return candidate->target() == divider->target();
++    });
++    if (old == old_dividers.end()) {
++      dividers_.push_back(AddChildView(std::move(divider)));
++    } else {
++      auto* retained = old->get();
++      old_dividers.erase(old);
++      CHECK(retained->Update(model, static_cast<int>(pixel_width),
++                             static_cast<int>(pixel_height), metrics,
++                             divider->target()));
++      retained->SetBoundsRect(divider->bounds());
++      dividers_.push_back(retained);
++    }
++    ReorderChildView(dividers_.back(),
++                     containers_.size() + headers_.size() + dividers_.size() - 1);
++  }
++  while (!old_dividers.empty()) {
++    auto* retired = old_dividers.back().get();
++    old_dividers.pop_back();
++    RemoveChildViewT(retired);
+   }
+-  if (!selection.IsEmpty()) {
++  if (!selection_outline_ && !selection.IsEmpty()) {
+     // A thick square outline of the structural subtree, independent of native
+     // rounded page-focus borders and the header's selected-child bottom rule.
+     selection_outline_ = AddChildView(std::make_unique<views::View>());
+@@ -186,7 +268,11 @@ bool WorkspaceContentsView::Present(
+     selection_outline_->GetViewAccessibility().SetIsIgnored(true);
+     selection_outline_->SetBorder(
+         views::CreateSolidBorder(4, ui::kColorFocusableBorderUnfocused));
++  }
++  if (selection_outline_) {
++    selection_outline_->SetVisible(!selection.IsEmpty());
+     selection_outline_->SetBoundsRect(selection);
++    ReorderChildView(selection_outline_, children().size() - 1);
+   }
+   return true;
+ }
+@@ -211,7 +297,7 @@ gfx::Rect WorkspaceContentsView::selecti
+   return selection_outline_ ? selection_outline_->bounds() : gfx::Rect();
+ }
+ 
+-void WorkspaceContentsView::Clear() {
++void WorkspaceContentsView::ClearControls() {
+   if (selection_outline_) {
+     auto* outline = selection_outline_.get();
+     selection_outline_ = nullptr;
+@@ -227,14 +313,26 @@ void WorkspaceContentsView::Clear() {
+     headers_.pop_back();
+     RemoveChildViewT(header);
+   }
+-  while (!containers_.empty()) {
+-    auto* container = containers_.back().get();
+-    containers_.pop_back();
++}
++
++void WorkspaceContentsView::Clear() {
++  ClearControls();
++  containers_.clear();
++  while (!leaves_.empty()) {
++    auto it = leaves_.begin();
++    auto* container = it->second.container.get();
+     container->contents_view()->SetWebContents(nullptr);
++    leaves_.erase(it);
+     RemoveChildViewT(container);
+   }
+ }
+ 
++ContentsContainerView* WorkspaceContentsView::GetContainerForTab(
++    TabKey key) const {
++  auto it = leaves_.find(key);
++  return it == leaves_.end() ? nullptr : it->second.container.get();
++}
++
+ std::vector<ContentsContainerView*>
+ WorkspaceContentsView::GetDisplayedContainers() const {
+   return {containers_.begin(), containers_.end()};
+--- a/chrome/browser/ui/views/frame/workspace_contents_view.h
++++ b/chrome/browser/ui/views/frame/workspace_contents_view.h
+@@ -6,11 +6,13 @@
+ #define CHROME_BROWSER_UI_VIEWS_FRAME_WORKSPACE_CONTENTS_VIEW_H_
+ 
+ #include <map>
++#include <memory>
+ #include <vector>
+ 
+ #include "base/feature_list.h"
+ #include "base/memory/raw_ptr.h"
+ #include "chrome/browser/ui/helium/workspaces/workspace_layout_geometry.h"
++#include "chrome/browser/ui/views/frame/contents_border_controller.h"
+ #include "chrome/browser/ui/views/frame/workspace_resize_area.h"
+ #include "chrome/browser/ui/views/frame/workspace_tabbed_header_view.h"
+ #include "ui/views/view.h"
+@@ -57,12 +59,23 @@ class WorkspaceContentsView : public vie
+   gfx::Rect selection_bounds() const;
+   void Clear();
+ 
+-  // Tree order, only currently attached leaves. Pointers expire on
+-  // Present/Clear.
++  // Tree order, only currently attached leaves. A container is retained while
++  // its stable TabKey remains displayed, including contents replacement. It
++  // expires when that key leaves the displayed set or on Clear().
+   std::vector<ContentsContainerView*> GetDisplayedContainers() const;
++  ContentsContainerView* GetContainerForTab(TabKey key) const;
+ 
+  private:
++  void ClearControls();
++  struct LeafHost {
++    raw_ptr<ContentsContainerView> container = nullptr;
++    // Subscribe before attachment; unsubscribe before deleting the view.
++    std::unique_ptr<
++        ContentsBorderController::ContentsContainerViewBorderController>
++        border_controller;
++  };
+   raw_ptr<BrowserView> browser_view_;
++  std::map<TabKey, LeafHost> leaves_;
+   std::vector<raw_ptr<ContentsContainerView>> containers_;
+   std::vector<raw_ptr<WorkspaceTabbedHeaderView>> headers_;
+   std::vector<raw_ptr<WorkspaceResizeArea>> dividers_;
+--- a/chrome/browser/ui/views/frame/workspace_contents_view_browsertest.cc
++++ b/chrome/browser/ui/views/frame/workspace_contents_view_browsertest.cc
+@@ -5,8 +5,10 @@
+ #include "chrome/browser/ui/views/frame/workspace_contents_view.h"
+ 
+ #include <memory>
++#include <utility>
+ #include <vector>
+ 
++#include "base/callback_list.h"
+ #include "base/functional/bind.h"
+ #include "base/functional/callback_helpers.h"
+ #include "base/test/bind.h"
+@@ -15,8 +17,10 @@
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/contents_container_view.h"
++#include "chrome/browser/ui/views/frame/contents_capture_border_view.h"
+ #include "chrome/browser/ui/views/frame/contents_web_view.h"
+ #include "chrome/browser/ui/views/frame/multi_contents_view.h"
++#include "chrome/browser/ui/views/tab_sharing/tab_capture_contents_border_helper.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/test/browser_test.h"
+@@ -116,6 +120,66 @@ IN_PROC_BROWSER_TEST_F(WorkspaceContents
+     EXPECT_EQ(containers[i]->contents_view()->web_contents(), bindings.at(tab));
+   }
+ 
++  // Focus/selection and resize retain native hosts and do not send spurious
++  // WebView detach/attach events to still-displayed pages.
++  int attached = 0;
++  int detached = 0;
++  std::vector<base::CallbackListSubscription> subscriptions;
++  for (auto* container : containers) {
++    subscriptions.push_back(
++        container->contents_view()->AddWebContentsAttachedCallback(
++            base::BindLambdaForTesting([&](views::WebView*) { ++attached; })));
++    subscriptions.push_back(
++        container->contents_view()->AddWebContentsDetachedCallback(
++            base::BindLambdaForTesting([&](views::WebView*) { ++detached; })));
++  }
++  const auto original_dividers = host->GetDividers();
++  ASSERT_TRUE(model.RevealTab(tabs[0]));
++  host->SetSize(gfx::Size(901, 701));
++  ASSERT_TRUE(host->Present(model, metrics, bindings));
++  EXPECT_EQ(host->GetDisplayedContainers(), containers);
++  EXPECT_EQ(host->GetDividers(), original_dividers);
++  ASSERT_TRUE(model.RevealTab(tabs[2]));
++  host->SetSize(gfx::Size(801, 601));
++  ASSERT_TRUE(host->Present(model, metrics, bindings));
++  EXPECT_EQ(host->GetDisplayedContainers(), containers);
++  EXPECT_EQ(attached, 0);
++  EXPECT_EQ(detached, 0);
++  for (const auto& [key, contents] : bindings) {
++    ASSERT_NE(host->GetContainerForTab(key), nullptr);
++    EXPECT_EQ(host->GetContainerForTab(key)->contents_view()->web_contents(),
++              contents);
++  }
++
++  // Swap two externally resolved attachments without replacing their stable
++  // native hosts. All old attachments must leave before the first new attach.
++  auto* first_host = host->GetContainerForTab(tabs[0]);
++  auto* second_host = host->GetContainerForTab(tabs[1]);
++  auto swapped = bindings;
++  std::swap(swapped[tabs[0]], swapped[tabs[1]]);
++  int swap_detached = 0;
++  std::vector<base::CallbackListSubscription> swap_subscriptions;
++  for (auto* container : {first_host, second_host}) {
++    swap_subscriptions.push_back(
++        container->contents_view()->AddWebContentsDetachedCallback(
++            base::BindLambdaForTesting(
++                [&](views::WebView*) { ++swap_detached; })));
++    swap_subscriptions.push_back(
++        container->contents_view()->AddWebContentsAttachedCallback(
++            base::BindLambdaForTesting(
++                [&](views::WebView*) { EXPECT_EQ(swap_detached, 2); })));
++  }
++  ASSERT_TRUE(host->Present(model, metrics, swapped));
++  EXPECT_EQ(host->GetContainerForTab(tabs[0]), first_host);
++  EXPECT_EQ(host->GetContainerForTab(tabs[1]), second_host);
++  EXPECT_EQ(first_host->contents_view()->web_contents(), pages[1].get());
++  EXPECT_EQ(second_host->contents_view()->web_contents(), pages[0].get());
++  EXPECT_EQ(attached, 2);
++  EXPECT_EQ(detached, 2);
++  swap_subscriptions.clear();
++  ASSERT_TRUE(host->Present(model, metrics, bindings));
++  subscriptions.clear();
++
+   // A missing binding must not partially detach the current native tree.
+   auto incomplete = bindings;
+   incomplete.erase(tabs[0]);
+@@ -135,6 +199,14 @@ IN_PROC_BROWSER_TEST_F(WorkspaceContents
+   EXPECT_FALSE(host->GetHeaders()[0]->children()[0]->GetEnabled());
+   EXPECT_FALSE(host->selection_bounds().IsEmpty());
+   const auto old_containers = host->GetDisplayedContainers();
++  {
++    const auto old_headers = host->GetHeaders();
++    const auto old_buttons = old_headers[0]->children();
++    ASSERT_TRUE(host->Present(model, metrics, bindings));
++    EXPECT_EQ(host->GetHeaders(), old_headers);
++    EXPECT_EQ(host->GetHeaders()[0]->children(), old_buttons);
++    EXPECT_EQ(host->GetDisplayedContainers(), old_containers);
++  }
+   host->UpdateTitles({{tabs[0], u"Email"}, {tabs[2], u"Updated title"}});
+   EXPECT_EQ(host->GetDisplayedContainers(), old_containers);
+   containers = host->GetDisplayedContainers();
+@@ -168,6 +240,59 @@ IN_PROC_BROWSER_TEST_F(WorkspaceContents
+   }
+ }
+ 
++IN_PROC_BROWSER_TEST_F(WorkspaceContentsViewBrowserTest,
++                       CaptureSubscriptionsFollowRetainedHostReplacement) {
++  auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
++  auto old_page = content::WebContents::Create(
++      content::WebContents::CreateParams(browser_view->GetProfile()));
++  auto replacement = content::WebContents::Create(
++      content::WebContents::CreateParams(browser_view->GetProfile()));
++  TabCaptureContentsBorderHelper::CreateForWebContents(old_page.get());
++  auto* capture =
++      TabCaptureContentsBorderHelper::FromWebContents(old_page.get());
++  capture->OnCapturerAdded(1);
++  const gfx::Rect original_region(5, 5, 100, 100);
++  capture->OnRegionCaptureRectChanged(1, original_region);
++
++  TabKey::Generator tab_ids;
++  WorkspaceId::Generator workspace_ids;
++  NodeId::Generator node_ids;
++  const TabKey key = tab_ids.GenerateNextId();
++  WorkspaceLayoutModel model;
++  model.CreateWorkspace(key, workspace_ids, node_ids);
++  auto* host = browser_view->AddChildView(
++      std::make_unique<WorkspaceContentsView>(browser_view));
++  base::ScopedClosureRunner remove_host(base::BindOnce(
++      [](BrowserView* parent, WorkspaceContentsView* child) {
++        parent->RemoveChildViewT(child);
++      },
++      browser_view, host));
++  host->SetBounds(0, 0, 800, 600);
++  ASSERT_TRUE(host->Present(model, {}, {{key, old_page.get()}}));
++  auto* container = host->GetContainerForTab(key);
++  ASSERT_NE(container, nullptr);
++  auto* border = container->capture_contents_border_view();
++  EXPECT_EQ(border->capture_location(), original_region);
++
++  ASSERT_TRUE(host->Present(model, {}, {{key, replacement.get()}}));
++  EXPECT_EQ(host->GetContainerForTab(key), container);
++  EXPECT_FALSE(border->GetVisible());
++  EXPECT_FALSE(border->capture_location().has_value());
++  // A detached page must not retain a location callback into a reused host.
++  capture->OnRegionCaptureRectChanged(1, gfx::Rect(10, 10, 200, 200));
++  EXPECT_FALSE(border->capture_location().has_value());
++  ASSERT_TRUE(host->Present(model, {}, {{key, old_page.get()}}));
++  EXPECT_EQ(border->capture_location(), gfx::Rect(10, 10, 200, 200));
++  host->Clear();
++  EXPECT_EQ(host->GetContainerForTab(key), nullptr);
++  EXPECT_TRUE(host->GetDisplayedContainers().empty());
++  capture->OnRegionCaptureRectChanged(1, original_region);
++  remove_host.RunAndReset();
++  capture->OnRegionCaptureRectChanged(1, gfx::Rect(20, 20, 100, 100));
++  EXPECT_FALSE(old_page->IsBeingDestroyed());
++  EXPECT_FALSE(replacement->IsBeingDestroyed());
++}
++
+ // This is the explicit input boundary: a standalone header with NO page hosts.
+ // Do not enable input on WorkspaceContentsView to exercise header callbacks.
+ IN_PROC_BROWSER_TEST_F(WorkspaceContentsViewBrowserTest,
+--- a/chrome/browser/ui/views/frame/workspace_resize_area.h
++++ b/chrome/browser/ui/views/frame/workspace_resize_area.h
+@@ -47,6 +47,7 @@ class WorkspaceResizeArea : public views
+               ResizeTarget target);
+   // Committed values in physical pixels; does not mutate model or geometry.
+   void UpdateValue(int value_pixels, bool announce);
++  ResizeTarget target() const { return target_; }
+ 
+   void OnResize(int resize_amount, bool last_update) override;
+   void OnMouseCaptureLost() override;
+--- a/chrome/browser/ui/views/frame/workspace_tabbed_header_view.cc
++++ b/chrome/browser/ui/views/frame/workspace_tabbed_header_view.cc
+@@ -98,23 +98,32 @@ bool WorkspaceTabbedHeaderView::Update(c
+   if (!visible || !node || node->layout != LayoutKind::kTabbed) {
+     return false;
+   }
+-  weak_factory_.InvalidateWeakPtrs();
+-  buttons_.clear();
+-  RemoveAllChildViews();
++  // Selection, titles and geometry may change without changing button
++  // identity. Retain keyboard/AX focus in that case. Topology changes revoke
++  // old callbacks before removing the old buttons.
++  const bool rebuild = container_ != container || child_ids_ != node->children;
++  if (rebuild) {
++    weak_factory_.InvalidateWeakPtrs();
++    buttons_.clear();
++    RemoveAllChildViews();
++  }
+   container_ = container;
+   selected_child_ = node->selected_child;
+   child_ids_ = node->children;
+   title_keys_.clear();
+   subtrees_.clear();
+-  for (NodeId child : child_ids_) {
++  for (size_t i = 0; i < child_ids_.size(); ++i) {
++    const NodeId child = child_ids_[i];
+     const auto* subtree = std::get_if<ContainerState>(&model.nodes.at(child));
+     NodeId title_leaf = subtree ? subtree->last_focused_leaf : child;
+     title_keys_.push_back(std::get<LeafState>(model.nodes.at(title_leaf)).tab);
+     subtrees_.push_back(subtree != nullptr);
+-    auto* button = AddChildView(std::make_unique<views::LabelButton>(
+-        base::BindRepeating(&WorkspaceTabbedHeaderView::RequestSelection,
+-                            weak_factory_.GetWeakPtr(), child)));
+-    buttons_.push_back(button);
++    if (rebuild) {
++      buttons_.push_back(AddChildView(std::make_unique<views::LabelButton>(
++          base::BindRepeating(&WorkspaceTabbedHeaderView::RequestSelection,
++                              weak_factory_.GetWeakPtr(), child))));
++    }
++    auto* button = buttons_[i].get();
+     button->SetEnabled(!select_child_.is_null());
+     button->SetFocusBehavior(FocusBehavior::ALWAYS);
+     button->SetElideBehavior(gfx::ELIDE_TAIL);
+@@ -148,8 +157,8 @@ void WorkspaceTabbedHeaderView::RequestS
+     return;
+   }
+   // The callback may synchronously rebuild/delete this surface. Copy it, and
+-  // do not access members after dispatch. Weak button callbacks expire on
+-  // Update.
++  // do not access members after dispatch. Weak button callbacks expire when
++  // Update changes the container or its immediate child identities.
+   auto callback = select_child_;
+   callback.Run(container_, child);
+ }
