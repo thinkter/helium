@@ -63,7 +63,7 @@
        vertical_tab_strip_state_controller_;
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_controller.cc
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,284 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -124,6 +124,11 @@
 +  }
 +  strip->AddObserver(this);
 +  tracking_ = true;
++  strip->SetDisplayedTabsProvider(base::BindRepeating(
++      &WorkspaceController::GetDisplayedTabs, base::Unretained(this)));
++  if (auto* active = strip->GetActiveTab()) {
++    displayed_keys_ = {KeyForTab(active)};
++  }
 +  ++generation_;
 +  return StartResult::kStarted;
 +}
@@ -132,11 +137,15 @@
 +  activation_requests_.InvalidateWeakPtrs();
 +  // TabStripModelObserver owns its observation bookkeeping; ScopedObservation
 +  // is explicitly forbidden by TabStripModel.
++  if (tracking_) {
++    window_->GetTabStripModel()->ClearDisplayedTabsProvider();
++  }
 +  StopObservingAll(this);
 +  tracking_ = false;
 +  subscriptions_.clear();
 +  tabs_.clear();
 +  detaching_.clear();
++  displayed_keys_.clear();
 +  model_ = WorkspaceLayoutModel();
 +  // Keep generators monotonic across re-enable, so stale IDs cannot alias.
 +  ++generation_;
@@ -168,6 +177,15 @@
 +  if (!tab) {
 +    return;
 +  }
++  // The host supplies its committed projection before activation. This keeps
++  // tab visibility notifications aligned with the detach-before-attach
++  // transaction rather than briefly hiding panes that remain displayed.
++  if (displayed_keys_.empty()) {
++    SetDisplayedTabs({key});
++  } else {
++    window_->GetTabStripModel()->SetPendingDisplayedTabsForSelection(
++        GetDisplayedTabs());
++  }
 +  // TabStripModel forbids reentrant mutations. Non-nestable dispatch prevents
 +  // nested UI loops from activating before the focus/observer stack unwinds. Do not optimistically reveal
 +  // a different page, and do not access this controller after activation:
@@ -198,6 +216,30 @@
 +    return nullptr;
 +  }
 +  return tab;
++}
++
++void WorkspaceController::SetDisplayedTabs(std::vector<TabKey> keys) {
++  if (!tracking_) {
++    return;
++  }
++  std::vector<tabs::TabInterface*> displayed;
++  for (TabKey key : keys) {
++    if (auto* tab = ResolveTab(key)) {
++      displayed.push_back(tab);
++    }
++  }
++  displayed_keys_ = std::move(keys);
++  window_->GetTabStripModel()->SetPendingDisplayedTabsForSelection(displayed);
++}
++
++std::vector<tabs::TabInterface*> WorkspaceController::GetDisplayedTabs() const {
++  std::vector<tabs::TabInterface*> displayed;
++  for (TabKey key : displayed_keys_) {
++    if (auto* tab = ResolveTab(key)) {
++      displayed.push_back(tab);
++    }
++  }
++  return displayed;
 +}
 +
 +TabKey WorkspaceController::KeyForTab(const tabs::TabInterface* tab) const {
@@ -285,6 +327,12 @@
 +  }
 +  if (selection.new_tab && selection.active_tab_changed()) {
 +    CHECK(model_.RevealTab(KeyForTab(selection.new_tab)));
++    // Until a host commits a wider projection, ordinary activation displays
++    // the selected leaf. A host with multiple leaves calls SetDisplayedTabs
++    // during its reconciliation transaction.
++    if (displayed_keys_.empty() || displayed_keys_.size() == 1) {
++      displayed_keys_ = {KeyForTab(selection.new_tab)};
++    }
 +  }
 +  CHECK(model_.Validate());
 +}
@@ -302,7 +350,7 @@
 +}  // namespace helium::workspaces
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_controller.h
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,117 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -372,6 +420,12 @@
 +  // T10's host adapter must additionally validate actual displayed membership.
 +  bool RequestActivateTab(TabKey key, uint64_t expected_generation);
 +
++  // Commits the host's actual displayed leaves. This is deliberately separate
++  // from model visibility: foreground/discard policy follows successful native
++  // attachment, not a projected tree. May be called by the BrowserView host
++  // before requesting activation so TabStripModel orders hide notifications.
++  void SetDisplayedTabs(std::vector<TabKey> keys);
++
 +  // Invalidates presentation/gesture requests on every observed change,
 +  // including pre-detach/discard.
 +  // T10 must bind weak lifetime + generation and apply cumulative resize deltas
@@ -381,6 +435,7 @@
 +
 + private:
 +  void ActivateRequestedTab(TabKey key, uint64_t expected_generation);
++  std::vector<tabs::TabInterface*> GetDisplayedTabs() const;
 +  bool HasNativeSplit() const;
 +  TabKey Associate(tabs::TabInterface* tab);
 +  void WillDetach(tabs::TabInterface* tab,
@@ -403,6 +458,7 @@
 +  std::map<TabKey, tabs::TabHandle> tabs_;
 +  std::map<TabKey, std::vector<base::CallbackListSubscription>> subscriptions_;
 +  std::set<TabKey> detaching_;
++  std::vector<TabKey> displayed_keys_;
 +  uint64_t generation_ = 0;
 +  bool tracking_ = false;
 +  ui::ScopedUnownedUserData<WorkspaceController> scoped_unowned_user_data_;
@@ -1232,3 +1288,595 @@
    auto callback = select_child_;
    callback.Run(container_, child);
  }
+--- a/chrome/browser/ui/tabs/tab_strip_model.cc
++++ b/chrome/browser/ui/tabs/tab_strip_model.cc
+@@ -19,6 +19,7 @@
+ 
+ #include "base/check.h"
+ #include "base/check_op.h"
++#include "base/command_line.h"
+ #include "base/containers/flat_map.h"
+ #include "base/containers/span.h"
+ #include "base/dcheck_is_on.h"
+@@ -44,8 +45,11 @@
+ #include "chrome/browser/extensions/tab_helper.h"
+ #include "chrome/browser/glic/public/glic_enabling.h"
+ #include "chrome/browser/lifetime/browser_shutdown.h"
++#include "chrome/browser/performance_manager/policies/discard_eligibility_policy.h"
++#include "chrome/browser/performance_manager/public/user_tuning/user_tuning_utils.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/reading_list/reading_list_model_factory.h"
++#include "chrome/browser/resource_coordinator/lifecycle_unit_state.mojom.h"
+ #include "chrome/browser/resource_coordinator/tab_helper.h"
+ #include "chrome/browser/send_tab_to_self/send_tab_to_self_util.h"
+ #include "chrome/browser/ui/bookmarks/bookmark_utils.h"
+@@ -76,6 +80,7 @@
+ #include "chrome/browser/ui/thumbnails/thumbnail_tab_helper.h"
+ #include "chrome/browser/ui/ui_features.h"
+ #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/web_applications/web_app_dialog_utils.h"
+ #include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
+ #include "chrome/browser/ui/web_applications/web_app_tabbed_utils.h"
+@@ -83,12 +88,15 @@
+ #include "chrome/browser/web_applications/web_app_provider.h"
+ #include "chrome/browser/web_applications/web_app_tab_helper.h"
+ #include "chrome/common/chrome_features.h"
++#include "chrome/common/pref_names.h"
+ #include "chrome/common/webui_url_constants.h"
+ #include "components/commerce/core/commerce_utils.h"
+ #include "components/content_settings/core/browser/host_content_settings_map.h"
+ #include "components/content_settings/core/common/content_settings.h"
+ #include "components/content_settings/core/common/content_settings_types.h"
+ #include "components/feature_engagement/public/feature_constants.h"
++#include "components/performance_manager/public/performance_manager.h"
++#include "components/prefs/pref_service.h"
+ #include "components/reading_list/core/reading_list_model.h"
+ #include "components/split_tabs/split_tab_id.h"
+ #include "components/split_tabs/split_tab_visual_data.h"
+@@ -163,6 +171,56 @@ bool ShouldForgetOpenersForTransition(ui
+                                       ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
+ }
+ 
++using DiscardEligibilityPolicy =
++    performance_manager::policies::DiscardEligibilityPolicy;
++using CanDiscardResult = performance_manager::policies::CanDiscardResult;
++constexpr auto kHibernateDiscardReason =
++    ::mojom::LifecycleUnitDiscardReason::EXTERNAL;
++
++DiscardEligibilityPolicy* GetDiscardEligibilityPolicy() {
++  if (!performance_manager::PerformanceManager::IsAvailable()) {
++    return nullptr;
++  }
++  return DiscardEligibilityPolicy::GetFromGraph(
++      performance_manager::PerformanceManager::GetGraph());
++}
++
++base::WeakPtr<performance_manager::PageNode> GetDiscardCandidatePageNode(
++    const TabStripModel* tab_strip_model,
++    int index,
++    DiscardEligibilityPolicy* eligibility_policy) {
++  CHECK(eligibility_policy);
++
++  // Foreground tabs can't be discarded. Both tabs in an active split
++  // are considered foreground, so neither half can be discarded.
++  if (tab_strip_model->IsTabInForeground(index)) {
++    return nullptr;
++  }
++
++  WebContents* const contents = tab_strip_model->GetWebContentsAt(index);
++  if (!contents || contents->WasDiscarded()) {
++    return nullptr;
++  }
++
++  base::WeakPtr<performance_manager::PageNode> page_node =
++      performance_manager::PerformanceManager::
++        GetPrimaryPageNodeForWebContents(contents);
++
++  if (!page_node) {
++    return nullptr;
++  }
++
++  CanDiscardResult can_discard_result = eligibility_policy->CanDiscard(
++      page_node.get(), kHibernateDiscardReason,
++      /*ignore_recent_visibility=*/true);
++
++  if (can_discard_result != CanDiscardResult::kEligible) {
++    return nullptr;
++  }
++
++  return page_node;
++}
++
+ }  // namespace
+ 
+ TabGroupModelFactory::TabGroupModelFactory() {
+@@ -1293,6 +1351,10 @@ tabs::TabInterface* TabStripModel::GetAc
+ }
+ 
+ std::vector<tabs::TabInterface*> TabStripModel::GetForegroundTabs() const {
++  auto displayed = GetDisplayedTabs();
++  if (!displayed.empty()) {
++    return displayed;
++  }
+   tabs::TabInterface* active_tab = GetActiveTab();
+   if (!active_tab) {
+     return std::vector<tabs::TabInterface*>();
+@@ -1303,6 +1365,28 @@ std::vector<tabs::TabInterface*> TabStri
+   return std::vector<tabs::TabInterface*>{active_tab};
+ }
+ 
++void TabStripModel::SetDisplayedTabsProvider(DisplayedTabsProvider provider) {
++  displayed_tabs_provider_ = std::move(provider);
++}
++
++void TabStripModel::ClearDisplayedTabsProvider() {
++  displayed_tabs_provider_.Reset();
++  pending_displayed_tabs_for_selection_.reset();
++}
++
++void TabStripModel::SetPendingDisplayedTabsForSelection(
++    std::vector<tabs::TabInterface*> tabs) {
++  pending_displayed_tabs_for_selection_ = std::move(tabs);
++}
++
++std::vector<tabs::TabInterface*> TabStripModel::GetDisplayedTabs() const {
++  if (pending_displayed_tabs_for_selection_) {
++    return *pending_displayed_tabs_for_selection_;
++  }
++  return displayed_tabs_provider_ ? displayed_tabs_provider_.Run()
++                                  : std::vector<tabs::TabInterface*>();
++}
++
+ WebContents* TabStripModel::GetWebContentsAt(int index) const {
+   if (ContainsIndex(index)) {
+     return GetTabAtIndex(index)->GetContents();
+@@ -1415,6 +1499,10 @@ void TabStripModel::CloseWebContents(con
+ 
+ void TabStripModel::CloseWebContentsAt(int index, uint32_t close_types) {
+   CHECK(ContainsIndex(index));
++  if (base::CommandLine::ForCurrentProcess()->
++          GetSwitchValueASCII("close-window-with-last-tab") == "never" &&
++          !closing_all_ && count() < 2)
++    delegate()->AddTabAt(GURL(), -1, true);
+   CloseWebContents(GetWebContentsAt(index), close_types);
+ }
+ 
+@@ -1541,6 +1629,11 @@ bool TabStripModel::IsTabInForeground(in
+     return false;
+   }
+ 
++  const auto displayed = GetDisplayedTabs();
++  if (!displayed.empty()) {
++    return std::ranges::find(displayed, GetTabAtIndex(index)) != displayed.end();
++  }
++
+   const tabs::TabInterface* active_tab = GetActiveTab();
+   if (!active_tab) {
+     return false;
+@@ -1827,7 +1920,20 @@ void TabStripModel::AddTab(std::unique_p
+     // For all other types, respect what was passed to us, normalizing -1s and
+     // values that are too large.
+     if (index < 0 || index > count()) {
+-      index = count();
++      const bool new_tab_next_to_active =
++          profile_->GetPrefs()->GetBoolean(prefs::kNewTabNextToActive);
++      const auto opener_group = GetTabGroupForTab(active_index());
++
++      if (count() >= 1 && new_tab_next_to_active) {
++        if (group_model_ && opener_group && !(add_types & ADD_ACTIVE)) {
++          index = static_cast<int>(
++              group_model_->GetTabGroup(*opener_group)->ListTabs().end());
++        } else {
++          index = active_index() + 1;
++        }
++      } else {
++        index = count();
++      }
+     }
+   }
+ 
+@@ -1920,11 +2026,11 @@ void TabStripModel::CloseSelectedTabs()
+ }
+ 
+ void TabStripModel::SelectNextTab(TabStripUserGestureDetails detail) {
+-  SelectRelativeTab(TabRelativeDirection::kNext, detail);
++  SelectRelativeTabCycle(TabRelativeDirection::kNext, detail);
+ }
+ 
+ void TabStripModel::SelectPreviousTab(TabStripUserGestureDetails detail) {
+-  SelectRelativeTab(TabRelativeDirection::kPrevious, detail);
++  SelectRelativeTabCycle(TabRelativeDirection::kPrevious, detail);
+ }
+ 
+ void TabStripModel::SelectLastTab(TabStripUserGestureDetails detail) {
+@@ -2579,7 +2685,24 @@ bool TabStripModel::IsContextMenuCommand
+     case CommandReload:
+       return delegate_->CanReload();
+ 
++    case CommandDiscard: {
++      auto* const eligibility_policy = GetDiscardEligibilityPolicy();
++      if (!eligibility_policy) {
++        return false;
++      }
++
++      const std::vector<int> indices =
++          GetIndicesDiscardedByCommand(context_index);
++      for (int index : indices) {
++        if (GetDiscardCandidatePageNode(this, index, eligibility_policy)) {
++          return true;
++        }
++      }
++      return false;
++    }
++
+     case CommandCloseOtherTabs:
++    case CommandCloseTabsToLeft:
+     case CommandCloseTabsToRight: {
+       return !GetIndicesClosedByCommand(context_index, command_id).empty();
+     }
+@@ -2648,8 +2771,7 @@ bool TabStripModel::IsContextMenuCommand
+       return true;
+ 
+     case CommandCopyURL:
+-      DCHECK(delegate()->IsForWebApp());
+-      return true;
++      return GetWebContentsAt(context_index) != nullptr;
+ 
+     case CommandGoBack:
+       DCHECK(delegate()->IsForWebApp());
+@@ -2738,6 +2860,28 @@ void TabStripModel::ExecuteContextMenuCo
+       break;
+     }
+ 
++    case CommandDiscard: {
++      auto* const eligibility_policy = GetDiscardEligibilityPolicy();
++      if (!eligibility_policy) {
++        break;
++      }
++
++      const std::vector<int> indices =
++          GetIndicesDiscardedByCommand(context_index);
++      for (int index : indices) {
++        base::WeakPtr<performance_manager::PageNode> page_node =
++            GetDiscardCandidatePageNode(this, index, eligibility_policy);
++        if (!page_node) {
++          continue;
++        }
++
++        performance_manager::user_tuning::DiscardPage(
++            page_node.get(), kHibernateDiscardReason,
++            /*ignore_minimum_time_in_background=*/true);
++      }
++      break;
++    }
++
+     case CommandCloseTab: {
+       base::UmaHistogramCounts1000("Tab.ContextMenu.CloseTab.SelectedTabsCount",
+                                    selection_model_.size());
+@@ -2769,6 +2913,7 @@ void TabStripModel::ExecuteContextMenuCo
+       break;
+     }
+ 
++    case CommandCloseTabsToLeft:
+     case CommandCloseTabsToRight: {
+       base::UmaHistogramCounts1000(
+           "Tab.ContextMenu.CloseTabsToRight.SelectedTabsCount",
+@@ -3015,10 +3160,14 @@ void TabStripModel::ExecuteContextMenuCo
+     }
+ 
+     case CommandCopyURL: {
++      std::vector<int> indices = GetIndicesForCommand(context_index);
+       base::UmaHistogramCounts1000("Tab.ContextMenu.CopyURL.SelectedTabsCount",
+-                                   selection_model_.size());
++                                   indices.size());
+       base::RecordAction(UserMetricsAction("TabContextMenu_CopyURL"));
+-      delegate()->CopyURL(GetWebContentsAt(context_index));
++
++      std::vector<content::WebContents*> web_contentses =
++          GetWebContentsesByIndices(indices);
++      delegate()->CopyURLs(web_contentses);
+       break;
+     }
+ 
+@@ -3280,9 +3429,13 @@ void TabStripModel::ExecuteCloseTabs(
+     base::RepeatingCallback<std::vector<tabs::TabInterface*>()>
+         get_tabs_to_close,
+     uint32_t close_types) {
+-  ReentrancyCheck reentrancy_check(&reentrancy_guard_);
+   const std::vector<tabs::TabInterface*> tabs_to_close =
+       std::move(get_tabs_to_close).Run();
++  if (base::CommandLine::ForCurrentProcess()->
++          GetSwitchValueASCII("close-window-with-last-tab") == "never" &&
++          static_cast<int>(tabs_to_close.size()) == count())
++      delegate()->AddTabAt(GURL(), -1, true);
++  ReentrancyCheck reentrancy_check(&reentrancy_guard_);
+ 
+   CreateHistoricalSplitIfClosing(tabs_to_close, close_types);
+ 
+@@ -3548,6 +3701,32 @@ std::vector<int> TabStripModel::GetIndic
+   return std::vector<int>(sel.begin(), sel.end());
+ }
+ 
++std::vector<int> TabStripModel::GetIndicesDiscardedByCommand(int index) const {
++  std::vector<int> indices;
++  if (!ContainsIndex(index)) {
++    return indices;
++  }
++
++  if (!IsTabInForeground(index)) {
++    return GetIndicesForCommand(index);
++  }
++
++  bool is_selected = IsTabSelected(index);
++  tabs::TabInterface* invoked_tab = GetTabAtIndex(index);
++  gfx::Range indices_to_exclude =
++      invoked_tab->IsSplit()
++          ? GetIndexRangeOfSplit(invoked_tab->GetSplit().value())
++          : gfx::Range(index, index + 1);
++
++  for (int i = 0; i < count(); ++i) {
++    if (!indices_to_exclude.Contains(gfx::Range(i, i + 1)) &&
++        (!is_selected || !IsTabSelected(i))) {
++      indices.push_back(i);
++    }
++  }
++  return indices;
++}
++
+ std::vector<tabs::TabInterface*> TabStripModel::GetTabsForCommand(
+     int index) const {
+   tabs::TabInterface* tab = GetTabAtIndex(index);
+@@ -3572,15 +3751,22 @@ std::vector<int> TabStripModel::GetIndic
+   if (!ContainsIndex(index)) {
+     return indices;
+   }
+-  DCHECK(id == CommandCloseTabsToRight || id == CommandCloseOtherTabs);
++  DCHECK(id == CommandCloseTabsToRight || id == CommandCloseTabsToLeft ||
++         id == CommandCloseOtherTabs);
+   bool is_selected = IsTabSelected(index);
+   int last_unclosed_tab = -1;
++  int first_unclosed_tab = count();
+   if (id == CommandCloseTabsToRight) {
+     last_unclosed_tab = is_selected ? *selection_model()
+                                            .GetListSelectionModel()
+                                            .selected_indices()
+                                            .rbegin()
+                                     : index;
++  } else if (id == CommandCloseTabsToLeft) {
++    first_unclosed_tab =
++        is_selected
++            ? *selection_model_.GetListSelectionModel().selected_indices().begin()
++            : index;
+   }
+ 
+   // If the tab that the context menu command is invoked on is not selected and
+@@ -3596,6 +3782,10 @@ std::vector<int> TabStripModel::GetIndic
+   // NOTE: callers expect the vector to be sorted in descending order.
+   std::optional<tab_groups::TabGroupId> focused_group = GetFocusedGroup();
+   for (int i = count() - 1; i > last_unclosed_tab; --i) {
++    if (id == CommandCloseTabsToLeft && i >= first_unclosed_tab) {
++      continue;
++    }
++
+     // Skip tabs that are not part of the focused group.
+     if (focused_group.has_value() && GetTabGroupForTab(i) != focused_group) {
+       continue;
+@@ -3615,7 +3805,8 @@ std::vector<tabs::TabInterface*> TabStri
+     return {};
+   }
+ 
+-  DCHECK(id == CommandCloseTabsToRight || id == CommandCloseOtherTabs);
++  DCHECK(id == CommandCloseTabsToRight || id == CommandCloseTabsToLeft ||
++         id == CommandCloseOtherTabs);
+ 
+   tabs::TabInterface* invoked_tab = GetTabAtIndex(index);
+ 
+@@ -3638,6 +3829,10 @@ std::vector<tabs::TabInterface*> TabStri
+     }
+ 
+     if (tab == invoked_tab || tab->IsPinned()) {
++      if (id == CommandCloseTabsToLeft && tab == invoked_tab) {
++        break;
++      }
++
+       continue;
+     }
+ 
+@@ -4115,6 +4310,59 @@ TabStripSelectionChange TabStripModel::S
+   return selection;
+ }
+ 
++void TabStripModel::SelectRelativeTabCycle(TabRelativeDirection direction,
++                                           TabStripUserGestureDetails detail) {
++  const bool enable_mru =
++      profile_->GetPrefs()->GetBoolean(prefs::kTabCyclingMRU);
++
++  if (enable_mru) {
++    SelectMRUTab(direction, detail);
++  } else {
++    SelectRelativeTab(direction, detail);
++  }
++}
++
++void TabStripModel::SelectMRUTab(TabRelativeDirection direction,
++                                 TabStripUserGestureDetails detail) {
++  if (mru_cycle_list_.empty()) {
++    BrowserWindowInterface* browser =
++        GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
++          GetWebContentsAt(0));
++    if (!browser) {
++      return;
++    }
++
++    for (int i = 0; i < count(); ++i) {
++      mru_cycle_list_.push_back(i);
++    }
++
++    std::sort(mru_cycle_list_.begin(), mru_cycle_list_.end(),
++              [this](int a, int b) {
++                return GetWebContentsAt(a)->GetLastActiveTimeTicks() >
++                       GetWebContentsAt(b)->GetLastActiveTimeTicks();
++              });
++
++    if (BrowserView* browser_view =
++            BrowserView::GetBrowserViewForBrowser(browser)) {
++      browser_view->StartTabCycling();
++    }
++  }
++
++  if (direction == TabRelativeDirection::kNext) {
++    std::rotate(mru_cycle_list_.begin(), mru_cycle_list_.begin() + 1,
++                mru_cycle_list_.end());
++  } else {
++    std::rotate(mru_cycle_list_.rbegin(), mru_cycle_list_.rbegin() + 1,
++                mru_cycle_list_.rend());
++  }
++
++  ActivateTabAt(mru_cycle_list_[0], detail);
++}
++
++void TabStripModel::StopMRUCycling() {
++  mru_cycle_list_.clear();
++}
++
+ void TabStripModel::SelectRelativeTab(TabRelativeDirection direction,
+                                       TabStripUserGestureDetails detail) {
+   // This may happen during automated testing or if a user somehow buffers
+@@ -5892,14 +6140,19 @@ void TabStripModel::CreateHistoricalSpli
+ }
+ 
+ void TabStripModel::NotifyForegroundTabsWillEnterBackground() {
+-  for (tabs::TabInterface* tab : GetForegroundTabs()) {
++  const auto old_foreground = GetForegroundTabs();
++  const auto new_displayed = GetDisplayedTabs();
++  for (tabs::TabInterface* tab : old_foreground) {
+     if (tab->IsActivated()) {
+-      static_cast<tabs::TabModel*>(GetActiveTab())
++      static_cast<tabs::TabModel*>(tab)
+           ->WillDeactivate(base::PassKey<TabStripModel>());
+     }
+-    static_cast<tabs::TabModel*>(tab)->WillBecomeHidden(
+-        base::PassKey<TabStripModel>());
++    if (std::ranges::find(new_displayed, tab) == new_displayed.end()) {
++      static_cast<tabs::TabModel*>(tab)->WillBecomeHidden(
++          base::PassKey<TabStripModel>());
++    }
+   }
++  pending_displayed_tabs_for_selection_.reset();
+ }
+ 
+ void TabStripModel::NotifyInactiveSplitTabWillBecomeHidden(
+--- a/chrome/browser/ui/tabs/tab_strip_model.h
++++ b/chrome/browser/ui/tabs/tab_strip_model.h
+@@ -21,6 +21,7 @@
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/weak_ptr.h"
+ #include "base/observer_list.h"
++#include "base/functional/callback.h"
+ #include "base/scoped_multi_source_observation.h"
+ #include "base/scoped_observation.h"
+ #include "base/time/time.h"
+@@ -440,6 +441,19 @@ class TabStripModel {
+   // that split. Doesn't take into account occlusion.
+   std::vector<tabs::TabInterface*> GetForegroundTabs() const;
+ 
++  // Supplies the set of tabs actually displayed by an alternate content host.
++  // The callback is Views-independent so tab lifecycle code can protect every
++  // displayed renderer without depending on BrowserView. The owner must clear
++  // it before destruction.
++  using DisplayedTabsProvider =
++      base::RepeatingCallback<std::vector<tabs::TabInterface*>()>;
++  void SetDisplayedTabsProvider(DisplayedTabsProvider provider);
++  void ClearDisplayedTabsProvider();
++  // Used by a host transaction before ActivateTab reaches SetSelection. The
++  // next foreground transition hides only tabs absent from this projection.
++  void SetPendingDisplayedTabsForSelection(
++      std::vector<tabs::TabInterface*> tabs);
++
+   // Returns the WebContents at the specified index, or NULL if there is
+   // none.
+   content::WebContents* GetWebContentsAt(int index) const;
+@@ -616,6 +630,10 @@ class TabStripModel {
+       TabStripUserGestureDetails detail = TabStripUserGestureDetails(
+           TabStripUserGestureDetails::GestureType::kOther));
+ 
++  // Stops cycling through tabs in MRU order when Ctrl is released.
++  // Used in BrowserView::StopTabCycling().
++  void StopMRUCycling();
++
+   // Moves the active in the specified direction. Respects group boundaries.
+   void MoveTabNext();
+   void MoveTabPrevious();
+@@ -768,6 +786,7 @@ class TabStripModel {
+     CommandCloseTab,
+     CommandCloseOtherTabs,
+     CommandCloseTabsToRight,
++    CommandCloseTabsToLeft,
+     CommandTogglePinned,
+     CommandToggleGrouped,
+     CommandToggleSiteMuted,
+@@ -791,6 +810,7 @@ class TabStripModel {
+     CommandGlicCreateNewChat,
+     CommandGlicSwitchToRecentConversation,
+     CommandGlicUnshare,
++    CommandDiscard,
+     CommandLast
+   };
+   // LINT.ThenChange(//tools/metrics/histograms/metadata/tab/histograms.xml:TabContextMenuCommand)
+@@ -1113,6 +1133,10 @@ class TabStripModel {
+   // increasing order.
+   std::vector<int> GetIndicesForCommand(int index) const;
+ 
++  // Returns the indices that will be discarded when executing the discard
++  // command for the tab at |index|. Indices are sorted in increasing order.
++  std::vector<int> GetIndicesDiscardedByCommand(int index) const;
++
+   // Returns a vector of indices of the tabs that will close when executing the
+   // command `id` for the tab at `index`. The returned indices are sorted in
+   // descending order.
+@@ -1203,6 +1227,16 @@ class TabStripModel {
+     kPrevious,
+   };
+ 
++  // Selects either the next tab or the previous tab.
++  // Uses MRU order if the user prefers it.
++  void SelectRelativeTabCycle(TabRelativeDirection direction,
++                              TabStripUserGestureDetails detail);
++
++  // Selects either the most recently used tab
++  // or the least recently used tab.
++  void SelectMRUTab(TabRelativeDirection direction,
++                    TabStripUserGestureDetails detail);
++
+   // Selects either the next tab (kNext), or the previous tab (kPrevious).
+   void SelectRelativeTab(TabRelativeDirection direction,
+                          TabStripUserGestureDetails detail);
+@@ -1437,6 +1471,7 @@ class TabStripModel {
+       uint32_t close_types);
+ 
+   void NotifyForegroundTabsWillEnterBackground();
++  std::vector<tabs::TabInterface*> GetDisplayedTabs() const;
+ 
+   // Prior to a split being removed, if the split is currently active, notify
+   // the inactive tab(s) in the split will become hidden as a result of the
+@@ -1496,6 +1531,9 @@ class TabStripModel {
+ 
+   // Tracks whether a modal UI is showing.
+   bool showing_modal_ui_ = false;
++  DisplayedTabsProvider displayed_tabs_provider_;
++  std::optional<std::vector<tabs::TabInterface*>>
++      pending_displayed_tabs_for_selection_;
+ 
+   // Timestamp when the current focus mode session began, if active.
+   std::optional<base::TimeTicks> focus_mode_session_start_time_;
+@@ -1508,6 +1546,9 @@ class TabStripModel {
+   // session.
+   bool had_pinned_tabs_in_focus_session_ = false;
+ 
++  // List of tabs for MRU cycling
++  std::vector<int> mru_cycle_list_;
++
+   base::WeakPtrFactory<TabStripModel> weak_factory_{this};
+ };
+ 
