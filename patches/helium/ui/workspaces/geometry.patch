@@ -1,0 +1,890 @@
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -519,6 +519,8 @@ static_library("ui") {
+   sources = [
+     "helium/helium_layout_state_controller.cc",
+     "helium/helium_layout_state_controller.h",
++    "helium/workspaces/workspace_layout_geometry.cc",
++    "helium/workspaces/workspace_layout_geometry.h",
+     "helium/workspaces/workspace_layout_model.cc",
+     "helium/workspaces/workspace_layout_model.h",
+     "idle_bubble.h",
+--- /dev/null
++++ b/chrome/browser/ui/helium/workspaces/workspace_layout_geometry.cc
+@@ -0,0 +1,313 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/helium/workspaces/workspace_layout_geometry.h"
++
++#include <algorithm>
++#include <cmath>
++#include <limits>
++#include <map>
++#include <numeric>
++#include <utility>
++
++namespace helium::workspaces {
++namespace {
++
++constexpr int64_t kTooLarge = int64_t{std::numeric_limits<int>::max()} + 1;
++
++int64_t AddMinimum(int64_t a, int64_t b) {
++  return std::min(kTooLarge, a + b);
++}
++
++int64_t ToPixels(int dip, double scale) {
++  const long double pixels = std::ceil(static_cast<long double>(dip) * scale);
++  return pixels >= kTooLarge ? kTooLarge : static_cast<int64_t>(pixels);
++}
++
++struct Minimum {
++  int64_t width = 0;
++  int64_t height = 0;
++};
++
++// Clamp undersized weighted shares and redistribute their deficit among the
++// remaining children. Normalize by the largest still-free weight each pass:
++// even DBL_MAX sums and denormal relative weights are safe. Underflow to zero
++// is harmless: positive child minima clamp that share before redistribution.
++std::vector<int> Allocate(int total,
++                          const std::vector<double>& weights,
++                          const std::vector<int>& minima) {
++  std::vector<int> sizes(weights.size(), 0);
++  std::vector<size_t> free(weights.size());
++  std::iota(free.begin(), free.end(), 0);
++  int remaining = total;
++  while (!free.empty()) {
++    double largest = 0;
++    for (size_t i : free) {
++      largest = std::max(largest, weights[i]);
++    }
++    long double sum = 0;
++    for (size_t i : free) {
++      sum += static_cast<long double>(weights[i]) / largest;
++    }
++    std::vector<long double> shares(weights.size(), 0);
++    std::vector<size_t> clamped;
++    for (size_t i : free) {
++      shares[i] =
++          remaining * (static_cast<long double>(weights[i]) / largest) / sum;
++      if (shares[i] < minima[i]) {
++        clamped.push_back(i);
++      }
++    }
++    if (!clamped.empty()) {
++      for (size_t i : clamped) {
++        sizes[i] = minima[i];
++        remaining -= sizes[i];
++      }
++      std::erase_if(free, [&](size_t i) { return sizes[i] != 0; });
++      continue;
++    }
++
++    // Reserve minima first so accumulated floating-point error can never
++    // steal a minimum pixel from a later child. Floor the remaining shares,
++    // capping at the budget to guarantee exact integer conservation.
++    int remainder = remaining;
++    for (size_t i : free) {
++      sizes[i] = minima[i];
++      remainder -= sizes[i];
++    }
++    for (size_t i : free) {
++      const int extra = std::min(
++          remainder, static_cast<int>(std::floor(shares[i])) - minima[i]);
++      sizes[i] += extra;
++      remainder -= extra;
++    }
++    std::stable_sort(free.begin(), free.end(), [&](size_t a, size_t b) {
++      return shares[a] - std::floor(shares[a]) >
++             shares[b] - std::floor(shares[b]);
++    });
++    for (size_t i = 0; remainder > 0; ++i, --remainder) {
++      ++sizes[free[i % free.size()]];
++    }
++    break;
++  }
++  return sizes;
++}
++
++void AddLeaf(WorkspaceGeometry& result, NodeId node, LayoutRect bounds) {
++  if (bounds.width > 0 && bounds.height > 0) {
++    result.leaves.push_back({node, bounds});
++    result.displayed_leaves.insert(node);
++  }
++}
++
++}  // namespace
++
++WorkspaceGeometry CalculateWorkspaceGeometry(const WorkspaceLayoutModel& model,
++                                             int viewport_width,
++                                             int viewport_height,
++                                             const LayoutMetrics& metrics) {
++  WorkspaceGeometry result;
++  if (viewport_width < 0 || viewport_height < 0 ||
++      metrics.leaf_min_width_dip <= 0 || metrics.leaf_min_height_dip <= 0 ||
++      metrics.header_height_dip < 0 || metrics.divider_size_dip < 0 ||
++      !std::isfinite(metrics.device_scale_factor) ||
++      metrics.device_scale_factor <= 0 || !model.Validate()) {
++    return result;
++  }
++  result.valid = true;
++  const auto workspace = std::ranges::find(
++      model.workspaces, model.active_workspace, &WorkspaceState::id);
++  if (workspace == model.workspaces.end() || !workspace->root) {
++    return result;
++  }
++  const Minimum leaf_minimum = {
++      ToPixels(metrics.leaf_min_width_dip, metrics.device_scale_factor),
++      ToPixels(metrics.leaf_min_height_dip, metrics.device_scale_factor)};
++  const int64_t header =
++      ToPixels(metrics.header_height_dip, metrics.device_scale_factor);
++  const int64_t divider =
++      ToPixels(metrics.divider_size_dip, metrics.device_scale_factor);
++
++  // Iterative postorder: model depth does not consume the C++ call stack.
++  std::vector<NodeId> order{workspace->root};
++  for (size_t i = 0; i < order.size(); ++i) {
++    if (const auto* container =
++            std::get_if<ContainerState>(&model.nodes.at(order[i]))) {
++      if (container->layout == LayoutKind::kTabbed) {
++        order.push_back(container->selected_child);
++      } else {
++        order.insert(order.end(), container->children.begin(),
++                     container->children.end());
++      }
++    }
++  }
++  std::map<NodeId, Minimum> minima;
++  for (auto it = order.rbegin(); it != order.rend(); ++it) {
++    const auto* container = std::get_if<ContainerState>(&model.nodes.at(*it));
++    if (!container) {
++      minima[*it] = leaf_minimum;
++      continue;
++    }
++    Minimum minimum;
++    if (container->layout == LayoutKind::kTabbed) {
++      minimum = minima.at(container->selected_child);
++      minimum.height = AddMinimum(minimum.height, header);
++    } else {
++      const bool horizontal = container->layout == LayoutKind::kHorizontal;
++      for (size_t i = 0; i < container->children.size(); ++i) {
++        const Minimum child = minima.at(container->children[i]);
++        if (horizontal) {
++          minimum.width = AddMinimum(minimum.width, child.width);
++          minimum.width = AddMinimum(minimum.width, i ? divider : 0);
++          minimum.height = std::max(minimum.height, child.height);
++        } else {
++          minimum.height = AddMinimum(minimum.height, child.height);
++          minimum.height = AddMinimum(minimum.height, i ? divider : 0);
++          minimum.width = std::max(minimum.width, child.width);
++        }
++      }
++    }
++    minima[*it] = minimum;
++  }
++  result.minimum_width = minima.at(workspace->root).width;
++  result.minimum_height = minima.at(workspace->root).height;
++  const LayoutRect viewport{0, 0, viewport_width, viewport_height};
++  if (result.minimum_width > viewport_width ||
++      result.minimum_height > viewport_height) {
++    result.constrained = true;
++    AddLeaf(result, workspace->active_leaf, viewport);
++    return result;
++  }
++
++  std::vector<std::pair<NodeId, LayoutRect>> pending{
++      {workspace->root, viewport}};
++  while (!pending.empty()) {
++    const auto [node, bounds] = pending.back();
++    pending.pop_back();
++    const auto* container = std::get_if<ContainerState>(&model.nodes.at(node));
++    if (!container) {
++      AddLeaf(result, node, bounds);
++      continue;
++    }
++    if (container->layout == LayoutKind::kTabbed) {
++      const int height = static_cast<int>(header);
++      result.headers.push_back(
++          {node, {bounds.x, bounds.y, bounds.width, height}});
++      pending.push_back({container->selected_child,
++                         {bounds.x, bounds.y + height, bounds.width,
++                          bounds.height - height}});
++      continue;
++    }
++    const bool horizontal = container->layout == LayoutKind::kHorizontal;
++    // A unary split has no divider, even if its configured size cannot fit.
++    const int gap =
++        container->children.size() > 1 ? static_cast<int>(divider) : 0;
++    std::vector<int> child_minima;
++    for (NodeId child : container->children) {
++      const Minimum minimum = minima.at(child);
++      child_minima.push_back(
++          static_cast<int>(horizontal ? minimum.width : minimum.height));
++    }
++    const int total = (horizontal ? bounds.width : bounds.height) -
++                      gap * static_cast<int>(container->children.size() - 1);
++    const auto sizes = Allocate(total, container->split_weights, child_minima);
++    int offset = 0;
++    std::vector<std::pair<NodeId, LayoutRect>> children;
++    for (size_t i = 0; i < sizes.size(); ++i) {
++      LayoutRect child = bounds;
++      if (horizontal) {
++        child.x += metrics.rtl ? bounds.width - offset - sizes[i] : offset;
++        child.width = sizes[i];
++      } else {
++        child.y += offset;
++        child.height = sizes[i];
++      }
++      children.emplace_back(container->children[i], child);
++      offset += sizes[i];
++      if (i + 1 < sizes.size()) {
++        LayoutRect separator = bounds;
++        if (horizontal) {
++          separator.x += metrics.rtl ? bounds.width - offset - gap : offset;
++          separator.width = gap;
++        } else {
++          separator.y += offset;
++          separator.height = gap;
++        }
++        result.dividers.push_back({node, i, separator});
++        offset += gap;
++      }
++    }
++    pending.insert(pending.end(), children.rbegin(), children.rend());
++  }
++  return result;
++}
++
++NodeId FindDirectionalNeighbor(const WorkspaceGeometry& geometry,
++                               NodeId from,
++                               FocusDirection direction) {
++  if (!geometry.valid) {
++    return {};
++  }
++  const auto source =
++      std::ranges::find(geometry.leaves, from, &LeafLayout::node);
++  if (source == geometry.leaves.end()) {
++    return {};
++  }
++  const auto& a = source->bounds;
++  NodeId best;
++  bool best_overlap = false;
++  long double best_distance = 0;
++  for (const auto& leaf : geometry.leaves) {
++    const auto& b = leaf.bounds;
++    // Doubled centers avoid fractions and signed-int overflow.
++    const int64_t dx = 2 * (int64_t{b.x} - a.x) + b.width - a.width;
++    const int64_t dy = 2 * (int64_t{b.y} - a.y) + b.height - a.height;
++    bool horizontal;
++    switch (direction) {
++      case FocusDirection::kLeft:
++        if (dx >= 0) {
++          continue;
++        }
++        horizontal = true;
++        break;
++      case FocusDirection::kRight:
++        if (dx <= 0) {
++          continue;
++        }
++        horizontal = true;
++        break;
++      case FocusDirection::kUp:
++        if (dy >= 0) {
++          continue;
++        }
++        horizontal = false;
++        break;
++      case FocusDirection::kDown:
++        if (dy <= 0) {
++          continue;
++        }
++        horizontal = false;
++        break;
++      default:
++        return {};
++    }
++    const bool overlap =
++        horizontal
++            ? std::max(int64_t{a.y}, int64_t{b.y}) <
++                  std::min(int64_t{a.y} + a.height, int64_t{b.y} + b.height)
++            : std::max(int64_t{a.x}, int64_t{b.x}) <
++                  std::min(int64_t{a.x} + a.width, int64_t{b.x} + b.width);
++    const long double distance =
++        static_cast<long double>(dx) * dx + static_cast<long double>(dy) * dy;
++    if (!best || (overlap && !best_overlap) ||
++        (overlap == best_overlap && distance < best_distance)) {
++      best = leaf.node;
++      best_overlap = overlap;
++      best_distance = distance;
++    }
++  }
++  return best;
++}
++
++}  // namespace helium::workspaces
+--- /dev/null
++++ b/chrome/browser/ui/helium/workspaces/workspace_layout_geometry.h
+@@ -0,0 +1,88 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_HELIUM_WORKSPACES_WORKSPACE_LAYOUT_GEOMETRY_H_
++#define CHROME_BROWSER_UI_HELIUM_WORKSPACES_WORKSPACE_LAYOUT_GEOMETRY_H_
++
++#include <cstddef>
++#include <cstdint>
++#include <set>
++#include <vector>
++
++#include "chrome/browser/ui/helium/workspaces/workspace_layout_model.h"
++
++namespace helium::workspaces {
++
++// Physical pixels, relative to the content viewport's top-left. The host owns
++// DIP conversion and outer chrome insets; no Views/browser dependencies here.
++struct LayoutRect {
++  int x = 0;
++  int y = 0;
++  int width = 0;
++  int height = 0;
++  bool operator==(const LayoutRect&) const = default;
++};
++
++struct LayoutMetrics {
++  int leaf_min_width_dip = 100;
++  int leaf_min_height_dip = 100;
++  int header_height_dip = 24;
++  int divider_size_dip = 4;
++  double device_scale_factor = 1;
++  // Mirror horizontal splits, not tree order or physical focus directions.
++  bool rtl = false;
++};
++
++struct LeafLayout {
++  NodeId node;
++  LayoutRect bounds;
++};
++struct HeaderLayout {
++  NodeId container;
++  LayoutRect bounds;
++};
++struct DividerLayout {
++  NodeId container;
++  // Divider between children[index] and children[index + 1] in tree order.
++  size_t index = 0;
++  LayoutRect bounds;
++};
++struct WorkspaceGeometry {
++  // False for invalid model/metrics or negative viewport dimensions.
++  bool valid = false;
++  bool constrained = false;
++  // Selected-child recursive minimum, saturated at INT_MAX + 1 (cannot fit
++  // any supported viewport). Hidden tabbed children do not contribute.
++  int64_t minimum_width = 0;
++  int64_t minimum_height = 0;
++  // Depth-first tree order, even in RTL. Only positive-area leaves appear.
++  std::vector<LeafLayout> leaves;
++  std::set<NodeId> displayed_leaves;
++  std::vector<HeaderLayout> headers;
++  std::vector<DividerLayout> dividers;
++};
++
++// Computes only the active workspace. Empty shells return valid empty output.
++// Metrics are rounded up to physical pixels once. Weighted splits honor child
++// minima by clamping and redistributing, then allocate fractional remainders
++// largest-first (tree-order ties). Never changes the model. If minima cannot
++// fit, project only the active leaf over the viewport, without
++// headers/dividers. A zero-area viewport has no displayed leaves, including
++// during fallback.
++WorkspaceGeometry CalculateWorkspaceGeometry(const WorkspaceLayoutModel& model,
++                                             int viewport_width,
++                                             int viewport_height,
++                                             const LayoutMetrics& metrics = {});
++
++enum class FocusDirection { kLeft, kRight, kUp, kDown };
++// Physical center half-plane; candidates with positive perpendicular overlap
++// rank before non-overlapping candidates, then squared center distance, then
++// tree order. No wrapping. Null for invalid output or a non-displayed source.
++NodeId FindDirectionalNeighbor(const WorkspaceGeometry& geometry,
++                               NodeId from,
++                               FocusDirection direction);
++
++}  // namespace helium::workspaces
++
++#endif  // CHROME_BROWSER_UI_HELIUM_WORKSPACES_WORKSPACE_LAYOUT_GEOMETRY_H_
+--- /dev/null
++++ b/chrome/browser/ui/helium/workspaces/workspace_layout_geometry_unittest.cc
+@@ -0,0 +1,459 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/helium/workspaces/workspace_layout_geometry.h"
++
++#include <algorithm>
++#include <cmath>
++#include <limits>
++#include <random>
++#include <utility>
++
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace helium::workspaces {
++namespace {
++
++constexpr NodeId N(unsigned value) {
++  return NodeId::FromUnsafeValue(value);
++}
++constexpr WorkspaceId W(unsigned value) {
++  return WorkspaceId::FromUnsafeValue(value);
++}
++constexpr TabKey T(unsigned value) {
++  return TabKey::FromUnsafeValue(value);
++}
++
++LayoutMetrics Metrics() {
++  return {10, 10, 3, 2, 1, false};
++}
++
++WorkspaceLayoutModel Sample() {
++  WorkspaceLayoutModel model;
++  model.nodes = {
++      {N(1),
++       ContainerState{
++           LayoutKind::kHorizontal, {N(2), N(3), N(8)}, N(3), {2, 3, 1}, N(5)}},
++      {N(2), LeafState{T(1)}},
++      {N(3),
++       ContainerState{LayoutKind::kTabbed, {N(4), N(7)}, N(4), {1, 2}, N(5)}},
++      {N(4),
++       ContainerState{LayoutKind::kVertical, {N(5), N(6)}, N(5), {1, 1}, N(5)}},
++      {N(5), LeafState{T(2)}},
++      {N(6), LeafState{T(3)}},
++      {N(7), LeafState{T(4)}},
++      {N(8), LeafState{T(5)}},
++      {N(9), LeafState{T(6)}}};
++  model.workspaces = {
++      {W(1), N(1), N(7), N(5)}, {W(2), N(9), N(9), N(9)}, {W(3), {}, {}, {}}};
++  model.active_workspace = W(1);
++  return model;
++}
++
++WorkspaceLayoutModel Split(std::vector<double> weights,
++                           LayoutKind kind = LayoutKind::kHorizontal) {
++  WorkspaceLayoutModel model;
++  ContainerState root{kind, {}, N(2), weights, N(2)};
++  for (unsigned i = 0; i < weights.size(); ++i) {
++    root.children.push_back(N(i + 2));
++    model.nodes.emplace(N(i + 2), LeafState{T(i + 1)});
++  }
++  model.nodes.emplace(N(1), std::move(root));
++  model.workspaces = {{W(1), N(1), N(1), N(2)}};
++  model.active_workspace = W(1);
++  return model;
++}
++
++void ExpectBounds(const WorkspaceGeometry& geometry,
++                  NodeId node,
++                  LayoutRect expected) {
++  auto it = std::ranges::find(geometry.leaves, node, &LeafLayout::node);
++  ASSERT_NE(it, geometry.leaves.end());
++  EXPECT_EQ(it->bounds, expected);
++}
++
++void ExpectPartition(const WorkspaceGeometry& geometry, int width, int height) {
++  ASSERT_TRUE(geometry.valid);
++  std::vector<LayoutRect> rectangles;
++  std::set<NodeId> displayed;
++  for (const auto& leaf : geometry.leaves) {
++    rectangles.push_back(leaf.bounds);
++    EXPECT_GT(leaf.bounds.width, 0);
++    EXPECT_GT(leaf.bounds.height, 0);
++    EXPECT_TRUE(displayed.insert(leaf.node).second);
++  }
++  EXPECT_EQ(displayed, geometry.displayed_leaves);
++  for (const auto& header : geometry.headers) {
++    rectangles.push_back(header.bounds);
++  }
++  for (const auto& divider : geometry.dividers) {
++    rectangles.push_back(divider.bounds);
++  }
++  int64_t area = 0;
++  for (size_t i = 0; i < rectangles.size(); ++i) {
++    const auto& a = rectangles[i];
++    EXPECT_GE(a.x, 0);
++    EXPECT_GE(a.y, 0);
++    EXPECT_GE(a.width, 0);
++    EXPECT_GE(a.height, 0);
++    EXPECT_LE(int64_t{a.x} + a.width, width);
++    EXPECT_LE(int64_t{a.y} + a.height, height);
++    area += int64_t{a.width} * a.height;
++    for (size_t j = 0; j < i; ++j) {
++      const auto& b = rectangles[j];
++      if (a.width && a.height && b.width && b.height) {
++        EXPECT_TRUE(a.x + a.width <= b.x || b.x + b.width <= a.x ||
++                    a.y + a.height <= b.y || b.y + b.height <= a.y);
++      }
++    }
++  }
++  EXPECT_EQ(area, int64_t{width} * height);
++}
++
++TEST(WorkspaceLayoutGeometryTest, MixedNestedLayoutAndExplicitDisplayedSet) {
++  const auto model = Sample();
++  ASSERT_TRUE(model.Validate());
++  auto geometry = CalculateWorkspaceGeometry(model, 124, 45, Metrics());
++  ASSERT_TRUE(geometry.valid);
++  EXPECT_FALSE(geometry.constrained);
++  EXPECT_EQ(geometry.minimum_width, 34);
++  EXPECT_EQ(geometry.minimum_height, 25);
++  EXPECT_EQ(geometry.displayed_leaves,
++            (std::set<NodeId>{N(2), N(5), N(6), N(8)}));
++  ExpectBounds(geometry, N(2), {0, 0, 40, 45});
++  ExpectBounds(geometry, N(5), {42, 3, 60, 20});
++  ExpectBounds(geometry, N(6), {42, 25, 60, 20});
++  ExpectBounds(geometry, N(8), {104, 0, 20, 45});
++  ASSERT_EQ(geometry.headers.size(), 1u);
++  EXPECT_EQ(geometry.headers[0].container, N(3));
++  EXPECT_EQ(geometry.headers[0].bounds, (LayoutRect{42, 0, 60, 3}));
++  ASSERT_EQ(geometry.dividers.size(), 3u);
++  EXPECT_EQ(geometry.dividers[0].container, N(1));
++  EXPECT_EQ(geometry.dividers[0].index, 0u);
++  EXPECT_EQ(geometry.dividers[0].bounds, (LayoutRect{40, 0, 2, 45}));
++  EXPECT_EQ(geometry.leaves[1].node, N(5));
++  ExpectPartition(geometry, 124, 45);
++}
++
++TEST(WorkspaceLayoutGeometryTest, ConstrainedUsesActiveNotHiddenSelection) {
++  auto model = Sample();
++  for (const auto size : {LayoutRect{0, 0, 33, 45},
++                          {0, 0, 124, 24},
++                          {0, 0, 1, 1},
++                          {0, 0, 0, 10},
++                          {0, 0, 10, 0}}) {
++    auto geometry =
++        CalculateWorkspaceGeometry(model, size.width, size.height, Metrics());
++    EXPECT_TRUE(geometry.constrained);
++    EXPECT_TRUE(geometry.headers.empty());
++    EXPECT_TRUE(geometry.dividers.empty());
++    if (size.width && size.height) {
++      EXPECT_EQ(geometry.displayed_leaves, (std::set<NodeId>{N(5)}));
++      ExpectBounds(geometry, N(5), size);
++    } else {
++      EXPECT_TRUE(geometry.displayed_leaves.empty());
++      EXPECT_TRUE(geometry.leaves.empty());
++    }
++    ExpectPartition(geometry, size.width, size.height);
++  }
++  EXPECT_TRUE(model.Validate());
++  EXPECT_EQ(model.nodes.size(), 9u);
++  EXPECT_EQ(model.workspaces[0].selected_node, N(7));
++  EXPECT_EQ(std::get<ContainerState>(model.nodes.at(N(1))).split_weights,
++            (std::vector<double>{2, 3, 1}));
++  EXPECT_FALSE(
++      CalculateWorkspaceGeometry(model, 34, 25, Metrics()).constrained);
++  EXPECT_EQ(CalculateWorkspaceGeometry(model, 124, 45, Metrics()).leaves.size(),
++            4u);
++}
++
++TEST(WorkspaceLayoutGeometryTest, TabbedMinimaFollowOnlySelectedSubtree) {
++  auto model = Sample();
++  ASSERT_TRUE(model.SetSelectedChild(N(3), N(7)));
++  auto geometry = CalculateWorkspaceGeometry(model, 34, 13, Metrics());
++  EXPECT_FALSE(geometry.constrained);
++  EXPECT_EQ(geometry.minimum_height, 13);
++  EXPECT_EQ(geometry.displayed_leaves, (std::set<NodeId>{N(2), N(7), N(8)}));
++  ExpectPartition(geometry, 34, 13);
++  ASSERT_TRUE(model.SetSelectedChild(N(3), N(4)));
++  EXPECT_TRUE(CalculateWorkspaceGeometry(model, 34, 13, Metrics()).constrained);
++}
++
++TEST(WorkspaceLayoutGeometryTest, WorkspaceShellAndSingleton) {
++  auto model = Sample();
++  ASSERT_TRUE(model.SwitchWorkspace(W(2)));
++  auto geometry = CalculateWorkspaceGeometry(model, 100, 80, Metrics());
++  EXPECT_EQ(geometry.displayed_leaves, (std::set<NodeId>{N(9)}));
++  ExpectBounds(geometry, N(9), {0, 0, 100, 80});
++  ASSERT_TRUE(model.SwitchWorkspace(W(3)));
++  geometry = CalculateWorkspaceGeometry(model, 100, 80, Metrics());
++  EXPECT_TRUE(geometry.valid);
++  EXPECT_FALSE(geometry.constrained);
++  EXPECT_TRUE(geometry.leaves.empty());
++  EXPECT_EQ(geometry.minimum_width, 0);
++  EXPECT_TRUE(CalculateWorkspaceGeometry({}, 100, 80).valid);
++}
++
++TEST(WorkspaceLayoutGeometryTest, UnaryAndNestedHeaderCosts) {
++  auto model = Split({1}, LayoutKind::kTabbed);
++  model.nodes.at(N(2)) =
++      ContainerState{LayoutKind::kTabbed, {N(3)}, N(3), {1}, N(3)};
++  model.nodes.emplace(N(3), LeafState{T(1)});
++  std::get<ContainerState>(model.nodes.at(N(1))).last_focused_leaf = N(3);
++  model.workspaces[0].active_leaf = N(3);
++  auto geometry = CalculateWorkspaceGeometry(model, 10, 16, Metrics());
++  EXPECT_EQ(geometry.minimum_height, 16);
++  ASSERT_EQ(geometry.headers.size(), 2u);
++  ExpectBounds(geometry, N(3), {0, 6, 10, 10});
++  ExpectPartition(geometry, 10, 16);
++  auto metrics = Metrics();
++  metrics.divider_size_dip = std::numeric_limits<int>::max();
++  metrics.device_scale_factor = 2;
++  geometry = CalculateWorkspaceGeometry(Split({1}), 20, 20, metrics);
++  EXPECT_FALSE(geometry.constrained);
++  EXPECT_TRUE(geometry.dividers.empty());
++  ExpectPartition(geometry, 20, 20);
++}
++
++TEST(WorkspaceLayoutGeometryTest, WeightedSharesClampBeforeRedistribution) {
++  auto metrics = Metrics();
++  metrics.divider_size_dip = 0;
++  auto geometry =
++      CalculateWorkspaceGeometry(Split({1, 2, 7}), 100, 10, metrics);
++  ExpectBounds(geometry, N(2), {0, 0, 10, 10});
++  ExpectBounds(geometry, N(3), {10, 0, 20, 10});
++  ExpectBounds(geometry, N(4), {30, 0, 70, 10});
++  geometry = CalculateWorkspaceGeometry(Split({1, 1, 98}), 100, 10, metrics);
++  ExpectBounds(geometry, N(2), {0, 0, 10, 10});
++  ExpectBounds(geometry, N(3), {10, 0, 10, 10});
++  ExpectBounds(geometry, N(4), {20, 0, 80, 10});
++  ExpectPartition(geometry, 100, 10);
++}
++
++TEST(WorkspaceLayoutGeometryTest,
++     LargestFractionalRemainderWinsBeforeTreeOrder) {
++  auto metrics = Metrics();
++  metrics.divider_size_dip = 0;
++  auto geometry = CalculateWorkspaceGeometry(Split({1, 2, 3}), 65, 10, metrics);
++  ExpectBounds(geometry, N(2), {0, 0, 11, 10});
++  ExpectBounds(geometry, N(3), {11, 0, 22, 10});
++  ExpectBounds(geometry, N(4), {33, 0, 32, 10});
++  ExpectPartition(geometry, 65, 10);
++}
++
++TEST(WorkspaceLayoutGeometryTest, ExtremePositiveFiniteRelativeWeights) {
++  auto metrics = Metrics();
++  metrics.divider_size_dip = 0;
++  const double largest = std::numeric_limits<double>::max();
++  const double smallest = std::numeric_limits<double>::denorm_min();
++  for (auto weights :
++       {std::vector<double>{largest, largest, smallest}, {1, 1, smallest}}) {
++    auto geometry =
++        CalculateWorkspaceGeometry(Split(weights), 100, 10, metrics);
++    ExpectBounds(geometry, N(2), {0, 0, 45, 10});
++    ExpectBounds(geometry, N(3), {45, 0, 45, 10});
++    ExpectBounds(geometry, N(4), {90, 0, 10, 10});
++    ExpectPartition(geometry, 100, 10);
++  }
++  auto geometry = CalculateWorkspaceGeometry(
++      Split({smallest, smallest, smallest}), 103, 10, metrics);
++  ExpectBounds(geometry, N(2), {0, 0, 35, 10});
++  ExpectBounds(geometry, N(3), {35, 0, 34, 10});
++  ExpectBounds(geometry, N(4), {69, 0, 34, 10});
++}
++
++TEST(WorkspaceLayoutGeometryTest, StableRoundingOnBothAxesAndRTL) {
++  auto metrics = Metrics();
++  metrics.divider_size_dip = 0;
++  for (bool rtl : {false, true}) {
++    metrics.rtl = rtl;
++    for (auto kind : {LayoutKind::kHorizontal, LayoutKind::kVertical}) {
++      auto geometry =
++          CalculateWorkspaceGeometry(Split({1, 1, 1}, kind), 103, 103, metrics);
++      EXPECT_EQ(geometry.leaves[0].node, N(2));
++      EXPECT_EQ(geometry.leaves[1].node, N(3));
++      EXPECT_EQ(geometry.leaves[2].node, N(4));
++      if (kind == LayoutKind::kHorizontal) {
++        ExpectBounds(geometry, N(2), {rtl ? 68 : 0, 0, 35, 103});
++        ExpectBounds(geometry, N(3), {34 + !rtl, 0, 34, 103});
++      } else {
++        ExpectBounds(geometry, N(2), {0, 0, 103, 35});
++        ExpectBounds(geometry, N(3), {0, 35, 103, 34});
++      }
++      ExpectPartition(geometry, 103, 103);
++    }
++  }
++}
++
++TEST(WorkspaceLayoutGeometryTest, FractionalDPIAndMirroredNestedGeometry) {
++  auto metrics = Metrics();
++  metrics.device_scale_factor = 1.25;
++  auto ltr = CalculateWorkspaceGeometry(Sample(), 129, 49, metrics);
++  EXPECT_EQ(ltr.minimum_width, 45);
++  EXPECT_EQ(ltr.minimum_height, 33);
++  EXPECT_EQ(ltr.headers[0].bounds.height, 4);
++  EXPECT_EQ(ltr.dividers[0].bounds.width, 3);
++  metrics.rtl = true;
++  auto rtl = CalculateWorkspaceGeometry(Sample(), 129, 49, metrics);
++  EXPECT_EQ(ltr.displayed_leaves, rtl.displayed_leaves);
++  for (size_t i = 0; i < ltr.leaves.size(); ++i) {
++    const auto& a = ltr.leaves[i];
++    const auto& b = rtl.leaves[i];
++    EXPECT_EQ(a.node, b.node);
++    EXPECT_EQ(b.bounds,
++              (LayoutRect{129 - a.bounds.x - a.bounds.width, a.bounds.y,
++                          a.bounds.width, a.bounds.height}));
++  }
++  ExpectPartition(ltr, 129, 49);
++  ExpectPartition(rtl, 129, 49);
++}
++
++TEST(WorkspaceLayoutGeometryTest, SaturatedMinimaAndMaximumViewport) {
++  auto metrics = Metrics();
++  const int maximum = std::numeric_limits<int>::max();
++  metrics.device_scale_factor = std::numeric_limits<double>::max();
++  auto geometry =
++      CalculateWorkspaceGeometry(Sample(), maximum, maximum, metrics);
++  EXPECT_EQ(geometry.minimum_width, int64_t{maximum} + 1);
++  EXPECT_EQ(geometry.minimum_height, int64_t{maximum} + 1);
++  EXPECT_TRUE(geometry.constrained);
++  ExpectPartition(geometry, maximum, maximum);
++  geometry = CalculateWorkspaceGeometry(Sample(), maximum, maximum, Metrics());
++  EXPECT_FALSE(geometry.constrained);
++  ExpectPartition(geometry, maximum, maximum);
++  EXPECT_EQ(FindDirectionalNeighbor(geometry, N(2), FocusDirection::kRight),
++            N(5));
++  metrics.device_scale_factor = std::numeric_limits<double>::denorm_min();
++  geometry = CalculateWorkspaceGeometry(Sample(), 5, 4, metrics);
++  EXPECT_FALSE(geometry.constrained);
++  ExpectPartition(geometry, 5, 4);
++}
++
++TEST(WorkspaceLayoutGeometryTest, RejectsInvalidInputsWithoutDisplayingLeaves) {
++  auto model = Sample();
++  auto metrics = Metrics();
++  for (double scale : {0.0, -1.0, std::numeric_limits<double>::infinity(),
++                       std::numeric_limits<double>::quiet_NaN()}) {
++    metrics.device_scale_factor = scale;
++    auto geometry = CalculateWorkspaceGeometry(model, 100, 100, metrics);
++    EXPECT_FALSE(geometry.valid);
++    EXPECT_TRUE(geometry.displayed_leaves.empty());
++  }
++  metrics = Metrics();
++  metrics.leaf_min_width_dip = 0;
++  EXPECT_FALSE(CalculateWorkspaceGeometry(model, 100, 100, metrics).valid);
++  metrics = Metrics();
++  metrics.header_height_dip = -1;
++  EXPECT_FALSE(CalculateWorkspaceGeometry(model, 100, 100, metrics).valid);
++  EXPECT_FALSE(CalculateWorkspaceGeometry(model, -1, 100).valid);
++  model.nodes.erase(N(5));
++  EXPECT_FALSE(CalculateWorkspaceGeometry(model, 100, 100).valid);
++}
++
++TEST(WorkspaceLayoutGeometryTest, DeepUnaryTreesDoNotUseRecursiveCallStack) {
++  auto model = Split({1});
++  constexpr unsigned depth = 2048;
++  model.nodes.clear();
++  for (unsigned i = 1; i < depth; ++i) {
++    model.nodes.emplace(
++        N(i), ContainerState{
++                  LayoutKind::kVertical, {N(i + 1)}, N(i + 1), {1}, N(depth)});
++  }
++  model.nodes.emplace(N(depth), LeafState{T(1)});
++  model.workspaces[0].active_leaf = N(depth);
++  auto geometry = CalculateWorkspaceGeometry(model, 10, 10, Metrics());
++  EXPECT_FALSE(geometry.constrained);
++  ExpectBounds(geometry, N(depth), {0, 0, 10, 10});
++  ExpectPartition(geometry, 10, 10);
++}
++
++TEST(WorkspaceLayoutGeometryTest,
++     SeededWeightAndViewportSweepPartitionsExactly) {
++  std::mt19937 random(12345);
++  for (int iteration = 0; iteration < 500; ++iteration) {
++    std::vector<double> weights(1 + random() % 12);
++    for (double& weight : weights) {
++      weight = std::ldexp(1.0 + (random() % 100) / 100.0,
++                          static_cast<int>(random() % 2000) - 1000);
++    }
++    auto metrics = Metrics();
++    metrics.rtl = random() % 2;
++    metrics.device_scale_factor = 0.75 + (random() % 8) * 0.25;
++    int width = 1 + random() % 900;
++    int height = 1 + random() % 900;
++    auto geometry = CalculateWorkspaceGeometry(
++        Split(weights,
++              random() % 2 ? LayoutKind::kHorizontal : LayoutKind::kVertical),
++        width, height, metrics);
++    ExpectPartition(geometry, width, height);
++    if (!geometry.constrained) {
++      for (const auto& leaf : geometry.leaves) {
++        EXPECT_GE(leaf.bounds.width,
++                  std::ceil(10 * metrics.device_scale_factor));
++        EXPECT_GE(leaf.bounds.height,
++                  std::ceil(10 * metrics.device_scale_factor));
++      }
++    }
++  }
++}
++
++TEST(WorkspaceLayoutGeometryTest,
++     DirectionalFocusUsesPhysicalHalfPlanesNoWrap) {
++  auto geometry =
++      CalculateWorkspaceGeometry(Split({1, 1, 1}), 100, 20, Metrics());
++  EXPECT_EQ(FindDirectionalNeighbor(geometry, N(3), FocusDirection::kLeft),
++            N(2));
++  EXPECT_EQ(FindDirectionalNeighbor(geometry, N(3), FocusDirection::kRight),
++            N(4));
++  EXPECT_FALSE(FindDirectionalNeighbor(geometry, N(2), FocusDirection::kLeft));
++  EXPECT_FALSE(FindDirectionalNeighbor(geometry, N(2), FocusDirection::kUp));
++  EXPECT_FALSE(
++      FindDirectionalNeighbor(geometry, N(99), FocusDirection::kRight));
++  auto metrics = Metrics();
++  metrics.rtl = true;
++  geometry = CalculateWorkspaceGeometry(Split({1, 1, 1}), 100, 20, metrics);
++  EXPECT_EQ(FindDirectionalNeighbor(geometry, N(3), FocusDirection::kLeft),
++            N(4));
++  EXPECT_EQ(FindDirectionalNeighbor(geometry, N(3), FocusDirection::kRight),
++            N(2));
++  geometry = CalculateWorkspaceGeometry(Sample(), 124, 45, Metrics());
++  EXPECT_EQ(FindDirectionalNeighbor(geometry, N(5), FocusDirection::kDown),
++            N(6));
++  EXPECT_EQ(FindDirectionalNeighbor(geometry, N(6), FocusDirection::kUp), N(5));
++  EXPECT_FALSE(FindDirectionalNeighbor(geometry, N(7), FocusDirection::kRight));
++  geometry = CalculateWorkspaceGeometry(Sample(), 1, 1, Metrics());
++  EXPECT_FALSE(FindDirectionalNeighbor(geometry, N(5), FocusDirection::kRight));
++}
++
++TEST(WorkspaceLayoutGeometryTest,
++     DirectionalOverlapPrecedesDistanceAndTiesUseTreeOrder) {
++  WorkspaceGeometry geometry;
++  geometry.valid = true;
++  // Touching perpendicular edges is not overlap. A more distant overlapping
++  // candidate wins; equal centers on the direction axis are outside the plane.
++  geometry.leaves = {{N(8), {0, 0, 10, 10}},
++                     {N(6), {10, 10, 10, 10}},
++                     {N(4), {40, 0, 10, 10}},
++                     {N(2), {0, 30, 10, 10}}};
++  EXPECT_EQ(FindDirectionalNeighbor(geometry, N(8), FocusDirection::kRight),
++            N(4));
++  geometry.leaves = {{N(8), {0, 10, 10, 20}},
++                     {N(6), {20, 0, 10, 20}},
++                     {N(4), {20, 20, 10, 20}}};
++  EXPECT_EQ(FindDirectionalNeighbor(geometry, N(8), FocusDirection::kRight),
++            N(6));
++  std::swap(geometry.leaves[1], geometry.leaves[2]);
++  EXPECT_EQ(FindDirectionalNeighbor(geometry, N(8), FocusDirection::kRight),
++            N(4));
++  geometry.leaves = {{N(8), {0, 0, 10, 10}},
++                     {N(6), {30, 20, 10, 10}},
++                     {N(4), {10, 20, 10, 10}}};
++  EXPECT_EQ(FindDirectionalNeighbor(geometry, N(8), FocusDirection::kRight),
++            N(4));
++  geometry.valid = false;
++  EXPECT_FALSE(FindDirectionalNeighbor(geometry, N(8), FocusDirection::kRight));
++}
++
++}  // namespace
++}  // namespace helium::workspaces
+--- a/chrome/test/BUILD.gn
++++ b/chrome/test/BUILD.gn
+@@ -6351,6 +6351,7 @@ test("unit_tests") {
+       "../browser/ui/color/chrome_color_provider_utils_unittest.cc",
+       "../browser/ui/color/material_new_tab_page_color_mixer_unittest.cc",
+       "../browser/ui/color/new_tab_page_color_mixer_unittest.cc",
++      "../browser/ui/helium/workspaces/workspace_layout_geometry_unittest.cc",
+       "../browser/ui/helium/workspaces/workspace_layout_model_unittest.cc",
+       "../browser/ui/incognito_allowed_url_unittest.cc",
+       "../browser/ui/intent_picker_tab_helper_unittest.cc",
