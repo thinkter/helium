@@ -361,3 +361,4 @@ helium/ui/progress-bar.patch
 helium/ui/exclusive-access-bubble.patch
 helium/ui/workspaces/model.patch
 helium/ui/workspaces/geometry.patch
+helium/ui/workspaces/views.patch
