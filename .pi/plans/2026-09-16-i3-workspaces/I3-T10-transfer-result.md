@@ -18,7 +18,7 @@ The feature flags and production entrypoint remain disabled; no user-facing expo
 - Source was edited in the applied Chromium tree and only `helium/ui/workspaces/controller.patch` was refreshed.
 - An accidental initial refresh was corrected safely: platform suffix was popped through the owned controller patch, source snapshots were restored, controller was refreshed narrowly, and the complete suffix was pushed again. No platform patch was retained with task changes.
 - Scratch unmerge routed only the owned controller patch to generic output. P/T/C controller patch hashes match:
-  `1004e3dac8775a0ef92cc8c921214024cc248c4d552a13b5564b65fc750847d7`.
+  `94cda3530cfdad65410b33f9ad599ec08239c0e67a959f024adf4bba16e735dc`.
 - Applied quilt state ended with the complete stack pushed and `quilt diff -z` empty.
 - Production compilation was attempted in the verified `chromium-builder:trixie-slim` container with the exact generated siso target command. The graph reached 941 steps but stopped at an unrelated generated Dawn source action because Go attempted to download `go1.25.0` and network is disabled. No source compiler was reached. Exact per-source generated clang commands were queried; this container mapping does not contain the referenced Chromium LLVM toolchain, so an honest source-object fallback could not execute. No tests, browser process, resource restoration, or downloads were run.
-- Full canonical/merged replay remains required after this patch export; no runtime or test acceptance is claimed here.
+- A post-edit merged replay was attempted with the canonical reconstruction procedure. It stopped at `controller.patch`: the live `.pc` backup footprint contains already-applied prior controller hunks in `tab_strip_model.cc`/BrowserView, so the replay reported reverse/failed hunks rather than silently accepting fuzz. This is recorded as a provenance blocker, not a pass; no runtime or test acceptance is claimed here.
