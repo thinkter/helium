@@ -1,0 +1,433 @@
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -519,6 +519,8 @@ static_library("ui") {
+   sources = [
+     "helium/helium_layout_state_controller.cc",
+     "helium/helium_layout_state_controller.h",
++    "helium/workspaces/workspace_layout_model.cc",
++    "helium/workspaces/workspace_layout_model.h",
+     "idle_bubble.h",
+     "screen_capture_notification_ui.h",
+     "tab_helpers.cc",
+--- /dev/null
++++ b/chrome/browser/ui/helium/workspaces/workspace_layout_model.cc
+@@ -0,0 +1,119 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/helium/workspaces/workspace_layout_model.h"
++
++#include <algorithm>
++#include <cmath>
++#include <set>
++#include <utility>
++
++namespace helium::workspaces {
++
++bool WorkspaceLayoutModel::Validate() const {
++  std::set<WorkspaceId> workspace_ids;
++  std::set<NodeId> visited;
++  std::set<TabKey> tabs;
++  std::map<NodeId, NodeId> parents;
++
++  for (const auto& workspace : workspaces) {
++    if (!workspace.id || !workspace_ids.insert(workspace.id).second) {
++      return false;
++    }
++    if (!workspace.root) {
++      if (workspace.selected_node || workspace.active_leaf) {
++        return false;
++      }
++      continue;
++    }
++
++    std::set<NodeId> members;
++    std::set<NodeId> visible_leaves;
++    // Iterative traversal rejects cycles/shared children without risking stack
++    // exhaustion on malformed or deeply nested input.
++    std::vector<std::pair<NodeId, bool>> pending = {{workspace.root, true}};
++    while (!pending.empty()) {
++      const auto [id, visible] = pending.back();
++      pending.pop_back();
++      const auto it = nodes.find(id);
++      if (!id || it == nodes.end() || !visited.insert(id).second) {
++        return false;
++      }
++      members.insert(id);
++      if (const auto* leaf = std::get_if<LeafState>(&it->second)) {
++        if (!leaf->tab || !tabs.insert(leaf->tab).second) {
++          return false;
++        }
++        if (visible) {
++          visible_leaves.insert(id);
++        }
++        continue;
++      }
++
++      const auto& container = std::get<ContainerState>(it->second);
++      switch (container.layout) {
++        case LayoutKind::kHorizontal:
++        case LayoutKind::kVertical:
++        case LayoutKind::kTabbed:
++          break;
++        default:
++          return false;
++      }
++      if (container.children.empty() ||
++          container.children.size() != container.split_weights.size() ||
++          !std::ranges::contains(container.children,
++                                 container.selected_child)) {
++        return false;
++      }
++      for (double weight : container.split_weights) {
++        if (!std::isfinite(weight) || weight <= 0) {
++          return false;
++        }
++      }
++      for (NodeId child : container.children) {
++        if (!parents.emplace(child, id).second) {
++          return false;
++        }
++        pending.emplace_back(
++            child, visible && (container.layout != LayoutKind::kTabbed ||
++                               child == container.selected_child));
++      }
++    }
++    if (!members.contains(workspace.selected_node) ||
++        !visible_leaves.contains(workspace.active_leaf)) {
++      return false;
++    }
++  }
++
++  if (visited.size() != nodes.size() ||
++      (workspaces.empty() ? !!active_workspace
++                          : !workspace_ids.contains(active_workspace))) {
++    return false;
++  }
++
++  // Traversal above established an acyclic forest. Check remembered focus even
++  // for hidden containers; it must name a leaf in that container's subtree.
++  for (const auto& [id, node] : nodes) {
++    const auto* container = std::get_if<ContainerState>(&node);
++    if (!container) {
++      continue;
++    }
++    auto focus = nodes.find(container->last_focused_leaf);
++    if (focus == nodes.end() ||
++        !std::holds_alternative<LeafState>(focus->second)) {
++      return false;
++    }
++    NodeId ancestor = focus->first;
++    while (ancestor != id) {
++      const auto parent = parents.find(ancestor);
++      if (parent == parents.end()) {
++        return false;
++      }
++      ancestor = parent->second;
++    }
++  }
++  return true;
++}
++
++}  // namespace helium::workspaces
+--- /dev/null
++++ b/chrome/browser/ui/helium/workspaces/workspace_layout_model.h
+@@ -0,0 +1,70 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_HELIUM_WORKSPACES_WORKSPACE_LAYOUT_MODEL_H_
++#define CHROME_BROWSER_UI_HELIUM_WORKSPACES_WORKSPACE_LAYOUT_MODEL_H_
++
++#include <map>
++#include <variant>
++#include <vector>
++
++#include "base/types/id_type.h"
++
++namespace helium::workspaces {
++
++using NodeId = base::IdTypeU64<class NodeIdTag>;
++using WorkspaceId = base::IdTypeU64<class WorkspaceIdTag>;
++// Opaque runtime association, not a strip index or a session identifier. The
++// controller will map these keys to tabs::TabHandle and resolve contents there.
++// Allocate IDs monotonically with their Generator; never recycle removed IDs.
++using TabKey = base::IdTypeU64<class TabKeyTag>;
++
++// Horizontal means side-by-side; vertical means top-to-bottom.
++enum class LayoutKind { kHorizontal, kVertical, kTabbed };
++
++struct LeafState {
++  TabKey tab;
++};
++
++struct ContainerState {
++  LayoutKind layout = LayoutKind::kTabbed;
++  std::vector<NodeId> children;
++  NodeId selected_child;
++  // Positive finite relative weights, one per child, retained in tabbed mode.
++  // They need not sum to one; consumers must normalize without overflowing.
++  std::vector<double> split_weights;
++  NodeId last_focused_leaf;
++};
++
++using NodeState = std::variant<LeafState, ContainerState>;
++
++struct WorkspaceState {
++  WorkspaceId id;
++  NodeId root;
++  // Structural selection is independent of the browser command target.
++  NodeId selected_node;
++  // Also remembers this workspace's last active page while it is inactive.
++  NodeId active_leaf;
++};
++
++// Pure value state: no browser objects, ownership, geometry or persistence.
++// IDs survive copies and layout changes. Public fields allow constructing and
++// validating candidate states before a future mutation boundary commits them.
++// No topology serialization is provided; a future adapter needs its own schema.
++struct WorkspaceLayoutModel {
++  std::map<NodeId, NodeState> nodes;
++  std::vector<WorkspaceState> workspaces;
++  WorkspaceId active_workspace;
++
++  // Validates the complete forest, including inactive/hidden subtrees. Empty
++  // workspace shells have null root/selection/active IDs. An empty model has
++  // no active workspace. Nonempty workspaces have a visible active leaf and
++  // every container remembers a descendant leaf. Does not resolve live tabs;
++  // the controller must additionally verify coverage of its managed tab set.
++  bool Validate() const;
++};
++
++}  // namespace helium::workspaces
++
++#endif  // CHROME_BROWSER_UI_HELIUM_WORKSPACES_WORKSPACE_LAYOUT_MODEL_H_
+--- /dev/null
++++ b/chrome/browser/ui/helium/workspaces/workspace_layout_model_unittest.cc
+@@ -0,0 +1,214 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/helium/workspaces/workspace_layout_model.h"
++
++#include <limits>
++
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace helium::workspaces {
++namespace {
++
++constexpr NodeId N(unsigned value) {
++  return NodeId::FromUnsafeValue(value);
++}
++constexpr WorkspaceId W(unsigned value) {
++  return WorkspaceId::FromUnsafeValue(value);
++}
++constexpr TabKey T(unsigned value) {
++  return TabKey::FromUnsafeValue(value);
++}
++
++// H(email, Tabbed(V(a,b), c), d): three root children, with an entire
++// split subtree selected by the tabbed container. Selection is not activation.
++WorkspaceLayoutModel Sample() {
++  WorkspaceLayoutModel model;
++  model.nodes = {
++      {N(1),
++       ContainerState{
++           LayoutKind::kHorizontal, {N(2), N(3), N(8)}, N(3), {2, 3, 1}, N(5)}},
++      {N(2), LeafState{T(1)}},
++      {N(3),
++       ContainerState{LayoutKind::kTabbed, {N(4), N(7)}, N(4), {1, 2}, N(5)}},
++      {N(4),
++       ContainerState{LayoutKind::kVertical, {N(5), N(6)}, N(5), {1, 1}, N(5)}},
++      {N(5), LeafState{T(2)}},
++      {N(6), LeafState{T(3)}},
++      {N(7), LeafState{T(4)}},
++      {N(8), LeafState{T(5)}},
++      {N(9), LeafState{T(6)}},
++  };
++  model.workspaces = {
++      {W(1), N(1), N(3), N(5)}, {W(2), N(9), N(9), N(9)}, {W(3), {}, {}, {}}};
++  model.active_workspace = W(1);
++  return model;
++}
++
++ContainerState& Container(WorkspaceLayoutModel& model, unsigned id) {
++  return std::get<ContainerState>(model.nodes.at(N(id)));
++}
++
++TEST(WorkspaceLayoutModelTest, RecursiveForestAndIndependentSelection) {
++  const auto model = Sample();
++  EXPECT_TRUE(model.Validate());
++  EXPECT_NE(model.workspaces[0].selected_node, model.workspaces[0].active_leaf);
++}
++
++TEST(WorkspaceLayoutModelTest, EmptyModelAndEmptyActiveWorkspace) {
++  EXPECT_TRUE(WorkspaceLayoutModel().Validate());
++  auto model = Sample();
++  model.active_workspace = W(3);
++  EXPECT_TRUE(model.Validate());
++}
++
++TEST(WorkspaceLayoutModelTest, UnaryContainersAreMeaningful) {
++  WorkspaceLayoutModel model;
++  model.nodes = {
++      {N(1), ContainerState{LayoutKind::kTabbed, {N(2)}, N(2), {1}, N(2)}},
++      {N(2), LeafState{T(1)}}};
++  model.workspaces = {{W(1), N(1), N(1), N(2)}};
++  model.active_workspace = W(1);
++  EXPECT_TRUE(model.Validate());
++}
++
++TEST(WorkspaceLayoutModelTest, RejectsDuplicateAndNullAssociations) {
++  auto model = Sample();
++  model.nodes.at(N(9)) = LeafState{T(1)};
++  EXPECT_FALSE(model.Validate());
++  model.nodes.at(N(9)) = LeafState{};
++  EXPECT_FALSE(model.Validate());
++}
++
++TEST(WorkspaceLayoutModelTest, RejectsSelectionOutsideWorkspace) {
++  for (NodeId selection : {NodeId(), N(9), N(99)}) {
++    auto model = Sample();
++    model.workspaces[0].selected_node = selection;
++    EXPECT_FALSE(model.Validate());
++  }
++}
++
++TEST(WorkspaceLayoutModelTest, RejectsInvalidOrHiddenActiveLeaf) {
++  for (NodeId active : {NodeId(), N(3), N(7), N(9), N(99)}) {
++    auto model = Sample();
++    model.workspaces[0].active_leaf = active;
++    EXPECT_FALSE(model.Validate());
++  }
++}
++
++TEST(WorkspaceLayoutModelTest, RejectsNonChildSelectionForEveryLayout) {
++  for (auto layout :
++       {LayoutKind::kHorizontal, LayoutKind::kVertical, LayoutKind::kTabbed}) {
++    auto model = Sample();
++    Container(model, 3).layout = layout;
++    Container(model, 3).selected_child = N(5);
++    EXPECT_FALSE(model.Validate());
++  }
++}
++
++TEST(WorkspaceLayoutModelTest, RejectsCyclesIncludingHiddenSubtrees) {
++  auto model = Sample();
++  model.nodes.at(N(7)) =
++      ContainerState{LayoutKind::kTabbed, {N(3)}, N(3), {1}, N(5)};
++  EXPECT_FALSE(model.Validate());
++  Container(model, 7).children = {N(7)};
++  Container(model, 7).selected_child = N(7);
++  EXPECT_FALSE(model.Validate());
++}
++
++TEST(WorkspaceLayoutModelTest, RejectsSharedAndRepeatedChildren) {
++  auto model = Sample();
++  Container(model, 4).children = {N(5), N(2)};
++  EXPECT_FALSE(model.Validate());
++  Container(model, 4).children = {N(5), N(5)};
++  EXPECT_FALSE(model.Validate());
++}
++
++TEST(WorkspaceLayoutModelTest, RejectsMissingAndOrphanNodes) {
++  auto model = Sample();
++  model.nodes.erase(N(7));
++  EXPECT_FALSE(model.Validate());
++  model = Sample();
++  model.nodes.emplace(N(99), LeafState{T(99)});
++  EXPECT_FALSE(model.Validate());
++}
++
++TEST(WorkspaceLayoutModelTest, RejectsNullNodeId) {
++  auto model = Sample();
++  model.nodes.emplace(NodeId(), LeafState{T(99)});
++  EXPECT_FALSE(model.Validate());
++}
++
++TEST(WorkspaceLayoutModelTest, RejectsInvalidRememberedFocus) {
++  for (NodeId focus : {NodeId(), N(3), N(2), N(99)}) {
++    auto model = Sample();
++    Container(model, 3).last_focused_leaf = focus;
++    EXPECT_FALSE(model.Validate());
++  }
++}
++
++TEST(WorkspaceLayoutModelTest, RejectsInvalidWeightsAndArity) {
++  for (double weight : {0.0, -1.0, std::numeric_limits<double>::infinity(),
++                        std::numeric_limits<double>::quiet_NaN()}) {
++    auto model = Sample();
++    Container(model, 3).split_weights[0] = weight;
++    EXPECT_FALSE(model.Validate());
++  }
++  auto model = Sample();
++  Container(model, 3).split_weights.pop_back();
++  EXPECT_FALSE(model.Validate());
++  Container(model, 3).children.clear();
++  Container(model, 3).split_weights.clear();
++  EXPECT_FALSE(model.Validate());
++}
++
++TEST(WorkspaceLayoutModelTest, RejectsUnknownLayout) {
++  auto model = Sample();
++  Container(model, 3).layout = static_cast<LayoutKind>(99);
++  EXPECT_FALSE(model.Validate());
++}
++
++TEST(WorkspaceLayoutModelTest, RejectsInvalidWorkspaceState) {
++  auto model = Sample();
++  model.workspaces[1].id = W(1);
++  EXPECT_FALSE(model.Validate());
++  model = Sample();
++  model.workspaces[1].id = {};
++  EXPECT_FALSE(model.Validate());
++  model = Sample();
++  model.active_workspace = W(99);
++  EXPECT_FALSE(model.Validate());
++  model = {};
++  model.active_workspace = W(1);
++  EXPECT_FALSE(model.Validate());
++}
++
++TEST(WorkspaceLayoutModelTest, RejectsSharedRootsAndInvalidEmptyShells) {
++  auto model = Sample();
++  model.workspaces[2] = {W(3), N(9), N(9), N(9)};
++  EXPECT_FALSE(model.Validate());
++  model = Sample();
++  model.workspaces[2].selected_node = N(1);
++  EXPECT_FALSE(model.Validate());
++  model.workspaces[2].selected_node = {};
++  model.workspaces[2].active_leaf = N(2);
++  EXPECT_FALSE(model.Validate());
++}
++
++TEST(WorkspaceLayoutModelTest, TypedGeneratorsAndCopiesPreserveIdentity) {
++  NodeId::Generator nodes;
++  TabKey::Generator tabs;
++  const auto first = nodes.GenerateNextId();
++  EXPECT_TRUE(first);
++  EXPECT_NE(first, nodes.GenerateNextId());
++  EXPECT_TRUE(tabs.GenerateNextId());
++  auto model = Sample();
++  auto copy = model;
++  EXPECT_EQ(copy.workspaces[0].root, model.workspaces[0].root);
++  EXPECT_EQ(std::get<LeafState>(copy.nodes.at(N(2))).tab, T(1));
++  EXPECT_TRUE(copy.Validate());
++}
++
++}  // namespace
++}  // namespace helium::workspaces
+--- a/chrome/test/BUILD.gn
++++ b/chrome/test/BUILD.gn
+@@ -6351,6 +6351,7 @@ test("unit_tests") {
+       "../browser/ui/color/chrome_color_provider_utils_unittest.cc",
+       "../browser/ui/color/material_new_tab_page_color_mixer_unittest.cc",
+       "../browser/ui/color/new_tab_page_color_mixer_unittest.cc",
++      "../browser/ui/helium/workspaces/workspace_layout_model_unittest.cc",
+       "../browser/ui/incognito_allowed_url_unittest.cc",
+       "../browser/ui/intent_picker_tab_helper_unittest.cc",
+       "../browser/ui/recently_audible_helper_unittest.cc",
