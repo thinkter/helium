@@ -11,7 +11,7 @@
      "idle_bubble.h",
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_layout_geometry.cc
-@@ -0,0 +1,313 @@
+@@ -0,0 +1,402 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -226,6 +226,7 @@
 +    const int total = (horizontal ? bounds.width : bounds.height) -
 +                      gap * static_cast<int>(container->children.size() - 1);
 +    const auto sizes = Allocate(total, container->split_weights, child_minima);
++    result.splits.push_back({node, sizes, child_minima});
 +    int offset = 0;
 +    std::vector<std::pair<NodeId, LayoutRect>> children;
 +    for (size_t i = 0; i < sizes.size(); ++i) {
@@ -255,6 +256,94 @@
 +    pending.insert(pending.end(), children.rbegin(), children.rend());
 +  }
 +  return result;
++}
++
++std::optional<ResizeTarget> ResolveWorkspaceResizeTarget(
++    const WorkspaceLayoutModel& model,
++    LayoutKind axis) {
++  if (!model.Validate() ||
++      (axis != LayoutKind::kHorizontal && axis != LayoutKind::kVertical)) {
++    return std::nullopt;
++  }
++  const auto workspace = std::ranges::find(
++      model.workspaces, model.active_workspace, &WorkspaceState::id);
++  if (workspace == model.workspaces.end() || !workspace->selected_node) {
++    return std::nullopt;
++  }
++  std::map<NodeId, NodeId> parents;
++  for (const auto& [id, state] : model.nodes) {
++    if (const auto* container = std::get_if<ContainerState>(&state)) {
++      for (NodeId child : container->children) {
++        parents.emplace(child, id);
++      }
++    }
++  }
++  // Structural selection may be hidden. Do not resize an unrelated visible
++  // branch through its ancestors in that case.
++  for (NodeId child = workspace->selected_node; parents.contains(child);) {
++    const NodeId parent = parents.at(child);
++    const auto& container = std::get<ContainerState>(model.nodes.at(parent));
++    if (container.layout == LayoutKind::kTabbed &&
++        container.selected_child != child) {
++      return std::nullopt;
++    }
++    child = parent;
++  }
++  NodeId branch;
++  for (NodeId node = workspace->selected_node; node;) {
++    const auto* container = std::get_if<ContainerState>(&model.nodes.at(node));
++    if (container && container->layout == axis &&
++        container->children.size() > 1) {
++      const NodeId child = branch ? branch : container->selected_child;
++      const size_t index = std::ranges::find(container->children, child) -
++                           container->children.begin();
++      return ResizeTarget{node,
++                          std::min(index, container->children.size() - 2)};
++    }
++    branch = node;
++    node = parents.contains(node) ? parents.at(node) : NodeId();
++  }
++  return std::nullopt;
++}
++
++bool ResizeWorkspace(WorkspaceLayoutModel& model,
++                     int viewport_width,
++                     int viewport_height,
++                     const LayoutMetrics& metrics,
++                     ResizeTarget target,
++                     int delta_pixels) {
++  const auto geometry = CalculateWorkspaceGeometry(model, viewport_width,
++                                                   viewport_height, metrics);
++  if (!geometry.valid || geometry.constrained) {
++    return false;
++  }
++  const auto split = std::ranges::find(geometry.splits, target.container,
++                                       &SplitLayout::container);
++  if (split == geometry.splits.end() || split->sizes.size() < 2 ||
++      target.index >= split->sizes.size() - 1) {
++    return false;
++  }
++  const size_t i = target.index;
++  const int delta = std::clamp(delta_pixels, split->minima[i] - split->sizes[i],
++                               split->sizes[i + 1] - split->minima[i + 1]);
++  if (!delta) {
++    return true;
++  }
++  auto sizes = split->sizes;
++  sizes[i] += delta;
++  sizes[i + 1] -= delta;
++  const int64_t total = std::accumulate(sizes.begin(), sizes.end(), int64_t{0});
++  auto candidate = model;
++  auto& weights = std::get<ContainerState>(candidate.nodes.at(target.container))
++                      .split_weights;
++  for (size_t child = 0; child < sizes.size(); ++child) {
++    weights[child] = static_cast<double>(sizes[child]) / total;
++  }
++  if (!candidate.Validate()) {
++    return false;
++  }
++  model = std::move(candidate);
++  return true;
 +}
 +
 +NodeId FindDirectionalNeighbor(const WorkspaceGeometry& geometry,
@@ -327,7 +416,7 @@
 +}  // namespace helium::workspaces
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_layout_geometry.h
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,127 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -337,6 +426,7 @@
 +
 +#include <cstddef>
 +#include <cstdint>
++#include <optional>
 +#include <set>
 +#include <vector>
 +
@@ -378,6 +468,13 @@
 +  size_t index = 0;
 +  LayoutRect bounds;
 +};
++// Realized allocation for a visible split, in tree order. Resize policy uses
++// these exact pixel extents and the same recursive minima as layout.
++struct SplitLayout {
++  NodeId container;
++  std::vector<int> sizes;
++  std::vector<int> minima;
++};
 +struct WorkspaceGeometry {
 +  // False for invalid model/metrics or negative viewport dimensions.
 +  bool valid = false;
@@ -391,6 +488,7 @@
 +  std::set<NodeId> displayed_leaves;
 +  std::vector<HeaderLayout> headers;
 +  std::vector<DividerLayout> dividers;
++  std::vector<SplitLayout> splits;
 +};
 +
 +// Computes only the active workspace. Empty shells return valid empty output.
@@ -405,6 +503,36 @@
 +                                             int viewport_height,
 +                                             const LayoutMetrics& metrics = {});
 +
++struct ResizeTarget {
++  NodeId container;
++  size_t index = 0;
++  bool operator==(const ResizeTarget&) const = default;
++};
++
++// Resolve the nearest selected/ancestor split on this axis. A selected split
++// uses its selected child; otherwise use the branch containing the selection.
++// Prefer its following divider, or its preceding divider for the last child.
++// Hidden targets and tabbed axes have none; unary splits are skipped.
++// Viewport feasibility is checked separately by ResizeWorkspace.
++// delta in ResizeWorkspace always grows the preceding TREE child, even in RTL.
++std::optional<ResizeTarget> ResolveWorkspaceResizeTarget(
++    const WorkspaceLayoutModel& model,
++    LayoutKind axis);
++
++// Common pointer/keyboard mutation boundary. Recompute geometry from current
++// authoritative state; reject hidden/missing dividers and constrained layouts.
++// Physical pixel delta, positive grows children[index]. Clamp against recursive
++// minima. Materialize realized sizes as normalized weights before transferring
++// pixels between the adjacent pair; nonadjacent pixel extents stay unchanged,
++// including when earlier weights were minimum-clamped. Topology/selection and
++// all other containers' weights remain untouched. Invalid requests are no-ops.
++bool ResizeWorkspace(WorkspaceLayoutModel& model,
++                     int viewport_width,
++                     int viewport_height,
++                     const LayoutMetrics& metrics,
++                     ResizeTarget target,
++                     int delta_pixels);
++
 +enum class FocusDirection { kLeft, kRight, kUp, kDown };
 +// Physical center half-plane; candidates with positive perpendicular overlap
 +// rank before non-overlapping candidates, then squared center distance, then
@@ -418,7 +546,7 @@
 +#endif  // CHROME_BROWSER_UI_HELIUM_WORKSPACES_WORKSPACE_LAYOUT_GEOMETRY_H_
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_layout_geometry_unittest.cc
-@@ -0,0 +1,459 @@
+@@ -0,0 +1,539 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -484,6 +612,86 @@
 +  model.workspaces = {{W(1), N(1), N(1), N(2)}};
 +  model.active_workspace = W(1);
 +  return model;
++}
++
++TEST(WorkspaceResizeTest, NearestAxisAndHiddenSelection) {
++  auto model = Sample();
++  EXPECT_FALSE(ResolveWorkspaceResizeTarget(model, LayoutKind::kHorizontal));
++  ASSERT_TRUE(model.SelectNode(N(5)));
++  EXPECT_EQ(ResolveWorkspaceResizeTarget(model, LayoutKind::kVertical),
++            (ResizeTarget{N(4), 0}));
++  EXPECT_EQ(ResolveWorkspaceResizeTarget(model, LayoutKind::kHorizontal),
++            (ResizeTarget{N(1), 1}));
++  ASSERT_TRUE(model.SelectNode(N(1)));
++  EXPECT_EQ(ResolveWorkspaceResizeTarget(model, LayoutKind::kHorizontal),
++            (ResizeTarget{N(1), 1}));
++  ASSERT_TRUE(model.SelectNode(N(8)));
++  EXPECT_EQ(ResolveWorkspaceResizeTarget(model, LayoutKind::kHorizontal),
++            (ResizeTarget{N(1), 1}));
++  EXPECT_FALSE(ResolveWorkspaceResizeTarget(model, LayoutKind::kTabbed));
++}
++
++TEST(WorkspaceResizeTest, AdjacentTransferAndRecursiveMinima) {
++  auto model = Sample();
++  const auto before = CalculateWorkspaceGeometry(model, 200, 100, Metrics());
++  const auto first = before.splits.front().sizes.front();
++  ASSERT_TRUE(ResizeWorkspace(model, 200, 100, Metrics(), {N(1), 1}, -1000));
++  const auto after = CalculateWorkspaceGeometry(model, 200, 100, Metrics());
++  EXPECT_EQ(after.splits.front().sizes.front(), first);
++  EXPECT_EQ(after.splits.front().sizes[1], after.splits.front().minima[1]);
++  ASSERT_TRUE(ResizeWorkspace(model, 200, 100, Metrics(), {N(4), 0}, 1000));
++  const auto vertical = CalculateWorkspaceGeometry(model, 200, 100, Metrics());
++  EXPECT_EQ(vertical.splits.back().sizes.back(), 10);
++  EXPECT_TRUE(model.Validate());
++  EXPECT_EQ(model.workspaces.front().selected_node, N(7));
++  EXPECT_EQ(model.workspaces.front().active_leaf, N(5));
++}
++
++TEST(WorkspaceResizeTest, NestedHeaderCostHiddenSplitAndUnaryAncestor) {
++  auto model = Sample();
++  NodeId::Generator ids;
++  ASSERT_TRUE(model.SelectNode(N(1)));
++  ASSERT_TRUE(model.SetLayout(LayoutKind::kVertical, ids));
++  ASSERT_TRUE(ResizeWorkspace(model, 100, 200, Metrics(), {N(1), 1},
++                              std::numeric_limits<int>::min()));
++  const auto geometry = CalculateWorkspaceGeometry(model, 100, 200, Metrics());
++  // The middle child contains a header above two minimum-height pages and
++  // their divider: 3 + 10 + 2 + 10, not just a single leaf minimum.
++  EXPECT_EQ(geometry.splits.front().sizes[1], 25);
++  ASSERT_TRUE(model.SetSelectedChild(N(3), N(7)));
++  EXPECT_FALSE(ResizeWorkspace(model, 100, 200, Metrics(), {N(4), 0}, 5));
++  ASSERT_TRUE(model.RemoveConfirmedTab(T(3)));
++  ASSERT_TRUE(model.SetSelectedChild(N(3), N(4)));
++  ASSERT_TRUE(model.SelectNode(N(5)));
++  // N(4) is retained as a meaningful unary vertical container; skip it.
++  EXPECT_EQ(ResolveWorkspaceResizeTarget(model, LayoutKind::kVertical),
++            (ResizeTarget{N(1), 1}));
++  EXPECT_FALSE(ResizeWorkspace(model, 100, 200, Metrics(), {N(4), 0}, 5));
++}
++
++TEST(WorkspaceResizeTest, CommonMutationAndInvalidRequests) {
++  auto pointer = Split({0.001, 2, 3});
++  auto keyboard = pointer;
++  ASSERT_TRUE(keyboard.SelectNode(N(2)));
++  const auto target =
++      ResolveWorkspaceResizeTarget(keyboard, LayoutKind::kHorizontal);
++  ASSERT_TRUE(target);
++  LayoutMetrics metrics = Metrics();
++  metrics.rtl = true;
++  metrics.device_scale_factor = 1.25;
++  ASSERT_TRUE(ResizeWorkspace(pointer, 203, 100, metrics, {N(1), 0}, 23));
++  ASSERT_TRUE(ResizeWorkspace(keyboard, 203, 100, metrics, *target, 23));
++  const auto weights =
++      std::get<ContainerState>(pointer.nodes.at(N(1))).split_weights;
++  EXPECT_EQ(weights,
++            std::get<ContainerState>(keyboard.nodes.at(N(1))).split_weights);
++  EXPECT_FALSE(ResizeWorkspace(pointer, 1, 1, metrics, {N(1), 0}, 5));
++  EXPECT_FALSE(ResizeWorkspace(pointer, 203, 100, metrics, {N(1), 99}, 5));
++  EXPECT_FALSE(ResizeWorkspace(pointer, 203, 100, metrics, {N(2), 0}, 5));
++  EXPECT_EQ(weights,
++            std::get<ContainerState>(pointer.nodes.at(N(1))).split_weights);
++  auto tabbed = Sample();
++  EXPECT_FALSE(ResizeWorkspace(tabbed, 200, 100, Metrics(), {N(3), 0}, 5));
 +}
 +
 +void ExpectBounds(const WorkspaceGeometry& geometry,

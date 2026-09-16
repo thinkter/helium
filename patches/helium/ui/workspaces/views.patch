@@ -1,11 +1,13 @@
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -2771,6 +2771,10 @@ static_library("ui") {
+@@ -2771,6 +2771,12 @@ static_library("ui") {
        "views/frame/web_contents_close_handler.cc",
        "views/frame/web_contents_close_handler.h",
        "views/frame/web_contents_close_handler_delegate.h",
 +      "views/frame/workspace_contents_view.cc",
 +      "views/frame/workspace_contents_view.h",
++      "views/frame/workspace_resize_area.cc",
++      "views/frame/workspace_resize_area.h",
 +      "views/frame/workspace_tabbed_header_view.cc",
 +      "views/frame/workspace_tabbed_header_view.h",
        "views/global_error_bubble_view.cc",
@@ -13,7 +15,7 @@
        "views/helium/frame_corner_radius.cc",
 --- /dev/null
 +++ b/chrome/browser/ui/views/frame/workspace_contents_view.cc
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,246 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -126,6 +128,19 @@
 +    headers.push_back(std::move(view));
 +  }
 +
++  std::vector<std::unique_ptr<WorkspaceResizeArea>> dividers;
++  for (const auto& divider : geometry.dividers) {
++    auto view = std::make_unique<WorkspaceResizeArea>(
++        WorkspaceResizeArea::RequestResize());
++    if (!view->Update(model, static_cast<int>(pixel_width),
++                      static_cast<int>(pixel_height), metrics,
++                      {divider.container, divider.index})) {
++      return false;
++    }
++    view->SetBoundsRect(dip_rect(divider.bounds));
++    dividers.push_back(std::move(view));
++  }
++
 +  // Structural selection outlines its visible subtree, never the active page
 +  // by proxy. Hidden selections have no rectangle. Suppress container outlines
 +  // in constrained mode rather than suggesting the full subtree is displayed.
@@ -178,6 +193,9 @@
 +  for (auto& header : headers) {
 +    headers_.push_back(AddChildView(std::move(header)));
 +  }
++  for (auto& divider : dividers) {
++    dividers_.push_back(AddChildView(std::move(divider)));
++  }
 +  if (!selection.IsEmpty()) {
 +    // A thick square outline of the structural subtree, independent of native
 +    // rounded page-focus borders and the header's selected-child bottom rule.
@@ -203,6 +221,10 @@
 +  return {headers_.begin(), headers_.end()};
 +}
 +
++std::vector<WorkspaceResizeArea*> WorkspaceContentsView::GetDividers() const {
++  return {dividers_.begin(), dividers_.end()};
++}
++
 +gfx::Rect WorkspaceContentsView::selection_bounds() const {
 +  return selection_outline_ ? selection_outline_->bounds() : gfx::Rect();
 +}
@@ -212,6 +234,11 @@
 +    auto* outline = selection_outline_.get();
 +    selection_outline_ = nullptr;
 +    RemoveChildViewT(outline);
++  }
++  while (!dividers_.empty()) {
++    auto* divider = dividers_.back().get();
++    dividers_.pop_back();
++    RemoveChildViewT(divider);
 +  }
 +  while (!headers_.empty()) {
 +    auto* header = headers_.back().get();
@@ -237,7 +264,7 @@
 +}  // namespace helium::workspaces
 --- /dev/null
 +++ b/chrome/browser/ui/views/frame/workspace_contents_view.h
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,74 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -251,6 +278,7 @@
 +#include "base/feature_list.h"
 +#include "base/memory/raw_ptr.h"
 +#include "chrome/browser/ui/helium/workspaces/workspace_layout_geometry.h"
++#include "chrome/browser/ui/views/frame/workspace_resize_area.h"
 +#include "chrome/browser/ui/views/frame/workspace_tabbed_header_view.h"
 +#include "ui/views/view.h"
 +
@@ -283,7 +311,7 @@
 +  // Uses this view's current DIP size. Call again after resize/scale changes.
 +  // Validates the entire displayed binding set before changing native views.
 +  // Native headers are display-only here; all host events remain suppressed.
-+  // Dividers remain reserved for T08. Titles may include hidden page keys.
++  // Dividers also have null callbacks. Titles may include hidden page keys.
 +  bool Present(const WorkspaceLayoutModel& model,
 +               const LayoutMetrics& metrics,
 +               const std::map<TabKey, content::WebContents*>& contents,
@@ -291,6 +319,7 @@
 +  // Refresh labels without detaching pages or changing selection.
 +  void UpdateTitles(const WorkspaceTabbedHeaderView::Titles& titles);
 +  std::vector<WorkspaceTabbedHeaderView*> GetHeaders() const;
++  std::vector<WorkspaceResizeArea*> GetDividers() const;
 +  // Empty if selection is hidden or a container is in constrained projection.
 +  gfx::Rect selection_bounds() const;
 +  void Clear();
@@ -303,6 +332,7 @@
 +  raw_ptr<BrowserView> browser_view_;
 +  std::vector<raw_ptr<ContentsContainerView>> containers_;
 +  std::vector<raw_ptr<WorkspaceTabbedHeaderView>> headers_;
++  std::vector<raw_ptr<WorkspaceResizeArea>> dividers_;
 +  raw_ptr<views::View> selection_outline_ = nullptr;
 +  bool presenting_ = false;
 +};
@@ -311,7 +341,7 @@
 +#endif  // CHROME_BROWSER_UI_VIEWS_FRAME_WORKSPACE_CONTENTS_VIEW_H_
 --- /dev/null
 +++ b/chrome/browser/ui/views/frame/workspace_contents_view_browsertest.cc
-@@ -0,0 +1,259 @@
+@@ -0,0 +1,354 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -405,6 +435,13 @@
 +  auto containers = host->GetDisplayedContainers();
 +  ASSERT_EQ(containers.size(), 4u);
 +  EXPECT_FALSE(host->GetMirrored());
++  ASSERT_EQ(host->GetDividers().size(), 3u);
++  for (auto* divider : host->GetDividers()) {
++    EXPECT_FALSE(divider->GetEnabled());
++    ui::AXActionData action;
++    action.action = ax::mojom::Action::kIncrement;
++    EXPECT_FALSE(divider->HandleAccessibleAction(action));
++  }
 +  EXPECT_EQ(containers[0]->bounds(), gfx::Rect(536, 0, 265, 601));
 +  EXPECT_EQ(containers[1]->bounds(), gfx::Rect(268, 0, 264, 601));
 +  EXPECT_EQ(containers[2]->bounds(), gfx::Rect(0, 0, 264, 298));
@@ -466,6 +503,7 @@
 +  EXPECT_TRUE(host->Present(model, metrics, bindings));
 +  EXPECT_TRUE(host->GetDisplayedContainers().empty());
 +  EXPECT_TRUE(host->GetHeaders().empty());
++  EXPECT_TRUE(host->GetDividers().empty());
 +  EXPECT_TRUE(host->selection_bounds().IsEmpty());
 +  EXPECT_EQ(ordinary->web_contents(), ordinary_contents);
 +  remove_host.RunAndReset();
@@ -567,6 +605,93 @@
 +  ASSERT_TRUE(model.SetSelectedChild(root, email_leaf));
 +  EXPECT_FALSE(header->Update(model, children[1], {}));
 +  EXPECT_EQ(header->container(), root);
++}
++
++// Pointer/keyboard/AX requests are exercised without any WebContents hosts.
++IN_PROC_BROWSER_TEST_F(WorkspaceContentsViewBrowserTest,
++                       DividerRequestsAndCommittedAccessibleValues) {
++  WorkspaceLayoutModel model;
++  WorkspaceId::Generator workspace_ids;
++  NodeId::Generator node_ids;
++  TabKey::Generator tab_ids;
++  model.CreateWorkspace(tab_ids.GenerateNextId(), workspace_ids, node_ids);
++  ASSERT_TRUE(model.SplitLeaf(model.workspaces.front().active_leaf,
++                              LayoutKind::kHorizontal, tab_ids.GenerateNextId(),
++                              node_ids));
++  const ResizeTarget target{model.workspaces.front().root, 0};
++  LayoutMetrics metrics;
++  metrics.device_scale_factor = 1.25;
++  std::vector<WorkspaceResizeRequest> requests;
++  auto owned = std::make_unique<WorkspaceResizeArea>(base::BindLambdaForTesting(
++      [&](WorkspaceResizeRequest request) { requests.push_back(request); }));
++  auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
++  auto* surface = browser_view->AddChildView(std::move(owned));
++  base::ScopedClosureRunner remove_surface(base::BindOnce(
++      [](BrowserView* parent, WorkspaceResizeArea* child) {
++        parent->RemoveChildViewT(child);
++      },
++      browser_view, surface));
++  surface->SetBounds(300, 0, 5, 400);
++  ASSERT_TRUE(surface->Update(model, 800, 500, metrics, target));
++  ui::AXNodeData data;
++  surface->GetViewAccessibility().GetAccessibleNodeData(&data);
++  EXPECT_EQ(data.role, ax::mojom::Role::kSlider);
++  EXPECT_EQ(
++      data.GetFloatAttribute(ax::mojom::FloatAttribute::kMinValueForRange),
++      125);
++  ui::KeyEvent key(ui::EventType::kKeyPressed, ui::VKEY_RIGHT, ui::EF_NONE);
++  EXPECT_TRUE(surface->OnKeyPressed(key));
++  ASSERT_EQ(requests.size(), 1u);
++  EXPECT_EQ(requests.back().target, target);
++  EXPECT_EQ(requests.back().delta_pixels, 63);
++  EXPECT_FALSE(requests.back().cumulative);
++  ui::AXActionData action;
++  action.action = ax::mojom::Action::kIncrement;
++  EXPECT_TRUE(surface->HandleAccessibleAction(action));
++  EXPECT_EQ(requests.back().delta_pixels, 63);
++
++  ui::MouseEvent press(ui::EventType::kMousePressed, gfx::PointF(2, 5),
++                       gfx::PointF(2, 5), base::TimeTicks(),
++                       ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON);
++  EXPECT_TRUE(surface->OnMousePressed(press));
++  ui::MouseEvent drag(ui::EventType::kMouseDragged, gfx::PointF(52, 5),
++                      gfx::PointF(52, 5), base::TimeTicks(),
++                      ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON);
++  EXPECT_TRUE(surface->OnMouseDragged(drag));
++  EXPECT_EQ(requests.back().delta_pixels, 63);
++  EXPECT_TRUE(requests.back().cumulative);
++  EXPECT_FALSE(requests.back().last_update);
++  EXPECT_FALSE(surface->OnKeyPressed(key));
++  EXPECT_FALSE(surface->Update(model, 800, 500, metrics, target));
++  surface->OnMouseCaptureLost();
++  EXPECT_EQ(requests.back().delta_pixels, 63);
++  EXPECT_TRUE(requests.back().last_update);
++  EXPECT_FALSE(surface->is_resizing());
++  auto pointer = model;
++  auto keyboard = model;
++  ASSERT_TRUE(ResizeWorkspace(pointer, 800, 500, metrics, target,
++                              requests.back().delta_pixels));
++  ASSERT_TRUE(ResizeWorkspace(keyboard, 800, 500, metrics, target,
++                              requests.front().delta_pixels));
++  EXPECT_EQ(std::get<ContainerState>(pointer.nodes.at(target.container))
++                .split_weights,
++            std::get<ContainerState>(keyboard.nodes.at(target.container))
++                .split_weights);
++  // Request-only: the surface's value changes only when owner commits it.
++  ui::AXNodeData unchanged;
++  surface->GetViewAccessibility().GetAccessibleNodeData(&unchanged);
++  EXPECT_EQ(
++      data.GetFloatAttribute(ax::mojom::FloatAttribute::kValueForRange),
++      unchanged.GetFloatAttribute(ax::mojom::FloatAttribute::kValueForRange));
++  surface->UpdateValue(400, true);
++  surface->GetViewAccessibility().GetAccessibleNodeData(&unchanged);
++  EXPECT_EQ(
++      unchanged.GetFloatAttribute(ax::mojom::FloatAttribute::kValueForRange),
++      400);
++  metrics.rtl = true;
++  ASSERT_TRUE(surface->Update(model, 800, 500, metrics, target));
++  EXPECT_TRUE(surface->OnKeyPressed(key));
++  EXPECT_EQ(requests.back().delta_pixels, -63);
 +}
 +
 +}  // namespace
@@ -813,3 +938,268 @@
 +
 +}  // namespace helium::workspaces
 +#endif  // CHROME_BROWSER_UI_VIEWS_FRAME_WORKSPACE_TABBED_HEADER_VIEW_H_
+--- /dev/null
++++ b/chrome/browser/ui/views/frame/workspace_resize_area.cc
+@@ -0,0 +1,189 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#include "chrome/browser/ui/views/frame/workspace_resize_area.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <limits>
++#include <utility>
++
++#include "base/i18n/rtl.h"
++#include "base/strings/string_number_conversions.h"
++#include "ui/accessibility/ax_action_data.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/color/color_id.h"
++#include "ui/events/event.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/background.h"
++#include "ui/views/controls/focus_ring.h"
++
++namespace helium::workspaces {
++namespace {
++constexpr int kResizeStepDip = 50;
++}  // namespace
++
++WorkspaceResizeArea::WorkspaceResizeArea(RequestResize request)
++    : ResizeArea(this), request_(std::move(request)) {
++  SetEnabled(false);
++  SetFocusBehavior(FocusBehavior::ALWAYS);
++  SetMirrored(false);
++  views::FocusRing::Install(this);
++  SetBackground(
++      views::CreateSolidBackground(ui::kColorFocusableBorderUnfocused));
++  auto& ax = GetViewAccessibility();
++  ax.SetRole(ax::mojom::Role::kSlider);
++  ax.AddAction(ax::mojom::Action::kIncrement);
++  ax.AddAction(ax::mojom::Action::kDecrement);
++}
++
++WorkspaceResizeArea::~WorkspaceResizeArea() = default;
++
++bool WorkspaceResizeArea::Update(const WorkspaceLayoutModel& model,
++                                 int viewport_width,
++                                 int viewport_height,
++                                 const LayoutMetrics& metrics,
++                                 ResizeTarget target) {
++  // Do not replace a captured drag's identity or conversion midway through it.
++  if (is_resizing()) {
++    return false;
++  }
++  const auto geometry = CalculateWorkspaceGeometry(model, viewport_width,
++                                                   viewport_height, metrics);
++  const auto split = std::ranges::find(geometry.splits, target.container,
++                                       &SplitLayout::container);
++  if (!geometry.valid || geometry.constrained ||
++      split == geometry.splits.end() || split->sizes.size() < 2 ||
++      target.index >= split->sizes.size() - 1) {
++    return false;
++  }
++  const auto& container =
++      std::get<ContainerState>(model.nodes.at(target.container));
++  set_axis(container.layout == LayoutKind::kHorizontal ? Axis::kHorizontal
++                                                       : Axis::kVertical);
++  target_ = target;
++  scale_ = metrics.device_scale_factor;
++  rtl_ = metrics.rtl;
++  ready_ = true;
++  last_drag_dip_ = 0;
++  const size_t i = target.index;
++  minimum_ = split->minima[i];
++  maximum_ = split->sizes[i] + split->sizes[i + 1] - split->minima[i + 1];
++  auto& ax = GetViewAccessibility();
++  // Isolated-harness labels; localize before any production exposure.
++  ax.SetName(axis() == Axis::kHorizontal ? u"Resize side-by-side panes"
++                                         : u"Resize top-to-bottom panes");
++  ax.SetIsVertical(axis() == Axis::kVertical);
++  ax.SetMinValueForRange(minimum_);
++  ax.SetMaxValueForRange(maximum_);
++  UpdateValue(split->sizes[i], false);
++  SetEnabled(!request_.is_null());
++  return true;
++}
++
++void WorkspaceResizeArea::UpdateValue(int value_pixels, bool announce) {
++  if (!ready_) {
++    return;
++  }
++  auto& ax = GetViewAccessibility();
++  const int value = std::clamp(value_pixels, minimum_, maximum_);
++  ax.SetValueForRange(value);
++  const auto text = base::NumberToString16(value) + u" pixels";
++  ax.SetValue(text);
++  if (announce && GetEnabled()) {
++    ax.AnnounceText(text);
++  }
++}
++
++bool WorkspaceResizeArea::Send(int delta_dip,
++                               bool cumulative,
++                               bool last_update) {
++  if (!ready_ || !GetEnabled() || request_.is_null()) {
++    return false;
++  }
++  const double pixels = std::clamp(std::round(delta_dip * scale_),
++                                   double(std::numeric_limits<int>::min()),
++                                   double(std::numeric_limits<int>::max()));
++  const WorkspaceResizeRequest request{target_, static_cast<int>(pixels),
++                                       cumulative, last_update};
++  auto callback = request_;
++  // Owner may synchronously destroy this surface. No member access after Run.
++  callback.Run(request);
++  return true;
++}
++
++void WorkspaceResizeArea::OnResize(int resize_amount, bool last_update) {
++  if (capture_lost_) {
++    capture_lost_ = false;
++    Send(last_drag_dip_, true, true);
++    return;
++  }
++  // ResizeArea reports screen displacement in DIPs, already flipped using
++  // global UI RTL. Undo that, then apply the explicit geometry RTL exactly
++  // once. Widen before negation so INT_MIN is safe.
++  int64_t amount = resize_amount;
++  if (axis() == Axis::kHorizontal && base::i18n::IsRTL() != rtl_) {
++    amount = -amount;
++  }
++  last_drag_dip_ = static_cast<int>(
++      std::clamp(amount, int64_t{std::numeric_limits<int>::min()},
++                 int64_t{std::numeric_limits<int>::max()}));
++  Send(last_drag_dip_, true, last_update);
++}
++
++void WorkspaceResizeArea::OnMouseCaptureLost() {
++  // The base implementation feeds its screen initial_position back through a
++  // local-to-screen conversion. Finish at the last requested displacement,
++  // rather than synthesizing a jump or rolling back to an unconfirmed value.
++  if (is_resizing()) {
++    capture_lost_ = true;
++    // Let ResizeArea clear its private drag state; OnResize ignores the
++    // synthetic displacement and consumes capture_lost_ before dispatch.
++    views::ResizeArea::OnMouseCaptureLost();
++  }
++}
++
++bool WorkspaceResizeArea::OnKeyPressed(const ui::KeyEvent& event) {
++  if (is_resizing()) {
++    return false;
++  }
++  int delta = 0;
++  if (axis() == Axis::kHorizontal) {
++    if (event.key_code() == ui::VKEY_LEFT) {
++      delta = rtl_ ? kResizeStepDip : -kResizeStepDip;
++    }
++    if (event.key_code() == ui::VKEY_RIGHT) {
++      delta = rtl_ ? -kResizeStepDip : kResizeStepDip;
++    }
++  } else {
++    if (event.key_code() == ui::VKEY_UP) {
++      delta = -kResizeStepDip;
++    }
++    if (event.key_code() == ui::VKEY_DOWN) {
++      delta = kResizeStepDip;
++    }
++  }
++  return delta && Send(delta, false, true);
++}
++
++bool WorkspaceResizeArea::HandleAccessibleAction(
++    const ui::AXActionData& action) {
++  if (!GetEnabled() || is_resizing()) {
++    return false;
++  }
++  if (action.action == ax::mojom::Action::kIncrement ||
++      action.action == ax::mojom::Action::kDecrement) {
++    return Send(action.action == ax::mojom::Action::kIncrement
++                    ? kResizeStepDip
++                    : -kResizeStepDip,
++                false, true);
++  }
++  return views::ResizeArea::HandleAccessibleAction(action);
++}
++
++BEGIN_METADATA(WorkspaceResizeArea)
++END_METADATA
++
++}  // namespace helium::workspaces
+--- /dev/null
++++ b/chrome/browser/ui/views/frame/workspace_resize_area.h
+@@ -0,0 +1,70 @@
++// Copyright 2026 The Helium Authors
++// You can use, redistribute, and/or modify this source code under
++// the terms of the GPL-3.0 license that can be found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_FRAME_WORKSPACE_RESIZE_AREA_H_
++#define CHROME_BROWSER_UI_VIEWS_FRAME_WORKSPACE_RESIZE_AREA_H_
++
++#include "base/functional/callback.h"
++#include "chrome/browser/ui/helium/workspaces/workspace_layout_geometry.h"
++#include "ui/views/controls/resize_area.h"
++#include "ui/views/controls/resize_area_delegate.h"
++
++namespace helium::workspaces {
++
++struct WorkspaceResizeRequest {
++  ResizeTarget target;
++  // Physical pixels, positive grows preceding TREE child, not screen-right.
++  int delta_pixels = 0;
++  // Pointer updates are cumulative from drag start, not incremental. Owner
++  // snapshots on first update, applies each request to that baseline through
++  // ResizeWorkspace, and ends the transaction on last_update. Keyboard/AX
++  // steps apply to current state. Do not add cumulative deltas repeatedly.
++  bool cumulative = false;
++  bool last_update = true;
++};
++
++// Contents-free native request surface. No model/page pointers are retained.
++// Controller must bind weak lifetime + workspace/presentation generation,
++// validate live state, and call ResizeWorkspace for BOTH pointer and keyboard.
++// Keep this surface alive during a drag, with frozen target/metrics/baseline;
++// cancel on external topology/viewport/scale/workspace changes. Update only
++// committed AX values until drag end, then reconcile surfaces. Null callback
++// makes the experimental host's divider display-only, including direct AX.
++class WorkspaceResizeArea : public views::ResizeArea,
++                            public views::ResizeAreaDelegate {
++  METADATA_HEADER(WorkspaceResizeArea, views::ResizeArea)
++
++ public:
++  using RequestResize = base::RepeatingCallback<void(WorkspaceResizeRequest)>;
++  explicit WorkspaceResizeArea(RequestResize request);
++  ~WorkspaceResizeArea() override;
++
++  bool Update(const WorkspaceLayoutModel& model,
++              int viewport_width,
++              int viewport_height,
++              const LayoutMetrics& metrics,
++              ResizeTarget target);
++  // Committed values in physical pixels; does not mutate model or geometry.
++  void UpdateValue(int value_pixels, bool announce);
++
++  void OnResize(int resize_amount, bool last_update) override;
++  void OnMouseCaptureLost() override;
++  bool OnKeyPressed(const ui::KeyEvent& event) override;
++  bool HandleAccessibleAction(const ui::AXActionData& action) override;
++
++ private:
++  bool Send(int delta_dip, bool cumulative, bool last_update);
++  RequestResize request_;
++  ResizeTarget target_;
++  double scale_ = 1;
++  bool rtl_ = false;
++  bool ready_ = false;
++  bool capture_lost_ = false;
++  int last_drag_dip_ = 0;
++  int minimum_ = 0;
++  int maximum_ = 0;
++};
++
++}  // namespace helium::workspaces
++#endif  // CHROME_BROWSER_UI_VIEWS_FRAME_WORKSPACE_RESIZE_AREA_H_
