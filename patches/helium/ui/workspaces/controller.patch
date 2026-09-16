@@ -63,7 +63,7 @@
        vertical_tab_strip_state_controller_;
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_controller.cc
-@@ -0,0 +1,284 @@
+@@ -0,0 +1,317 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -74,6 +74,8 @@
 +#include "base/functional/bind.h"
 +#include "base/task/single_thread_task_runner.h"
 +#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/workspace_contents_view.h"
 +#include "chrome/browser/ui/tabs/tab_strip_model.h"
 +
 +namespace helium::workspaces {
@@ -95,7 +97,8 @@
 +}
 +
 +WorkspaceController::StartResult WorkspaceController::StartTracking() {
-+  if (!base::FeatureList::IsEnabled(kWorkspaceTabTracking)) {
++  if (!base::FeatureList::IsEnabled(kWorkspaceTabTracking) ||
++      !base::FeatureList::IsEnabled(kWorkspaceContentsHost)) {
 +    return StartResult::kFeatureDisabled;
 +  }
 +  if (window_->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
@@ -109,6 +112,11 @@
 +  }
 +
 +  auto* strip = window_->GetTabStripModel();
++  browser_view_ = BrowserView::GetBrowserViewForBrowser(
++      window_->GetBrowserForMigrationOnly());
++  if (!browser_view_)
++    return StartResult::kUnsupportedWindow;
++  workspace_host_ = browser_view_->InstallWorkspaceContentsView();
 +  model_.CreateWorkspace(TabKey(), workspace_ids_, node_ids_);
 +  TabKey previous;
 +  for (int i = 0; i < strip->count(); ++i) {
@@ -130,6 +138,10 @@
 +    displayed_keys_ = {KeyForTab(active)};
 +  }
 +  ++generation_;
++  if (!PresentHost()) {
++    StopTracking();
++    return StartResult::kUnsupportedWindow;
++  }
 +  return StartResult::kStarted;
 +}
 +
@@ -139,6 +151,12 @@
 +  // is explicitly forbidden by TabStripModel.
 +  if (tracking_) {
 +    window_->GetTabStripModel()->ClearDisplayedTabsProvider();
++    if (workspace_host_) {
++      workspace_host_->Clear();
++      browser_view_->RemoveWorkspaceContentsView();
++      workspace_host_ = nullptr;
++      browser_view_ = nullptr;
++    }
 +  }
 +  StopObservingAll(this);
 +  tracking_ = false;
@@ -216,6 +234,21 @@
 +    return nullptr;
 +  }
 +  return tab;
++}
++
++bool WorkspaceController::PresentHost() {
++  if (!tracking_ || !browser_view_ || !workspace_host_)
++    return false;
++  std::map<TabKey, content::WebContents*> bindings;
++  for (const auto& [key, handle] : tabs_) {
++    if (auto* tab = ResolveTab(key); tab && tab->GetContents())
++      bindings.emplace(key, tab->GetContents());
++  }
++  workspace_host_->SetBoundsRect(browser_view_->contents_container()->bounds());
++  if (!workspace_host_->Present(model_, LayoutMetrics(), bindings))
++    return false;
++  SetDisplayedTabs(workspace_host_->GetDisplayedTabKeys());
++  return true;
 +}
 +
 +void WorkspaceController::SetDisplayedTabs(std::vector<TabKey> keys) {
@@ -350,7 +383,7 @@
 +}  // namespace helium::workspaces
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_controller.h
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,123 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -373,9 +406,12 @@
 +#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 +
 +class BrowserWindowInterface;
++class BrowserView;
 +class TabStripModel;
 +
 +namespace helium::workspaces {
++
++class WorkspaceContentsView;
 +
 +BASE_DECLARE_FEATURE(kWorkspaceTabTracking);
 +
@@ -425,6 +461,7 @@
 +  // attachment, not a projected tree. May be called by the BrowserView host
 +  // before requesting activation so TabStripModel orders hide notifications.
 +  void SetDisplayedTabs(std::vector<TabKey> keys);
++  bool PresentHost();
 +
 +  // Invalidates presentation/gesture requests on every observed change,
 +  // including pre-detach/discard.
@@ -459,6 +496,8 @@
 +  std::map<TabKey, std::vector<base::CallbackListSubscription>> subscriptions_;
 +  std::set<TabKey> detaching_;
 +  std::vector<TabKey> displayed_keys_;
++  raw_ptr<BrowserView> browser_view_ = nullptr;
++  raw_ptr<WorkspaceContentsView> workspace_host_ = nullptr;
 +  uint64_t generation_ = 0;
 +  bool tracking_ = false;
 +  ui::ScopedUnownedUserData<WorkspaceController> scoped_unowned_user_data_;
@@ -965,7 +1004,7 @@
      // A thick square outline of the structural subtree, independent of native
      // rounded page-focus borders and the header's selected-child bottom rule.
      selection_outline_ = AddChildView(std::make_unique<views::View>());
-@@ -186,7 +268,11 @@ bool WorkspaceContentsView::Present(
+@@ -186,8 +268,13 @@ bool WorkspaceContentsView::Present(
      selection_outline_->GetViewAccessibility().SetIsIgnored(true);
      selection_outline_->SetBorder(
          views::CreateSolidBorder(4, ui::kColorFocusableBorderUnfocused));
@@ -975,9 +1014,11 @@
      selection_outline_->SetBoundsRect(selection);
 +    ReorderChildView(selection_outline_, children().size() - 1);
    }
++  displayed_keys_ = keys;
    return true;
  }
-@@ -211,7 +297,7 @@ gfx::Rect WorkspaceContentsView::selecti
+ 
+@@ -211,7 +298,7 @@ gfx::Rect WorkspaceContentsView::selecti
    return selection_outline_ ? selection_outline_->bounds() : gfx::Rect();
  }
  
@@ -986,7 +1027,7 @@
    if (selection_outline_) {
      auto* outline = selection_outline_.get();
      selection_outline_ = nullptr;
-@@ -227,14 +313,26 @@ void WorkspaceContentsView::Clear() {
+@@ -227,14 +314,27 @@ void WorkspaceContentsView::Clear() {
      headers_.pop_back();
      RemoveChildViewT(header);
    }
@@ -997,6 +1038,7 @@
 +
 +void WorkspaceContentsView::Clear() {
 +  ClearControls();
++  displayed_keys_.clear();
 +  containers_.clear();
 +  while (!leaves_.empty()) {
 +    auto it = leaves_.begin();
@@ -1032,7 +1074,7 @@
  #include "chrome/browser/ui/views/frame/workspace_resize_area.h"
  #include "chrome/browser/ui/views/frame/workspace_tabbed_header_view.h"
  #include "ui/views/view.h"
-@@ -57,12 +59,23 @@ class WorkspaceContentsView : public vie
+@@ -57,15 +59,28 @@ class WorkspaceContentsView : public vie
    gfx::Rect selection_bounds() const;
    void Clear();
  
@@ -1042,6 +1084,7 @@
 +  // its stable TabKey remains displayed, including contents replacement. It
 +  // expires when that key leaves the displayed set or on Clear().
    std::vector<ContentsContainerView*> GetDisplayedContainers() const;
++  std::vector<TabKey> GetDisplayedTabKeys() const { return displayed_keys_; }
 +  ContentsContainerView* GetContainerForTab(TabKey key) const;
  
   private:
@@ -1058,6 +1101,10 @@
    std::vector<raw_ptr<ContentsContainerView>> containers_;
    std::vector<raw_ptr<WorkspaceTabbedHeaderView>> headers_;
    std::vector<raw_ptr<WorkspaceResizeArea>> dividers_;
++  std::vector<TabKey> displayed_keys_;
+   raw_ptr<views::View> selection_outline_ = nullptr;
+   bool presenting_ = false;
+ };
 --- a/chrome/browser/ui/views/frame/workspace_contents_view_browsertest.cc
 +++ b/chrome/browser/ui/views/frame/workspace_contents_view_browsertest.cc
 @@ -5,8 +5,10 @@
