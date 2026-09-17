@@ -63,7 +63,7 @@
        vertical_tab_strip_state_controller_;
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_controller.cc
-@@ -0,0 +1,792 @@
+@@ -0,0 +1,810 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -79,6 +79,7 @@
 +#include "base/functional/callback_helpers.h"
 +#include "base/i18n/rtl.h"
 +#include "base/task/single_thread_task_runner.h"
++#include "chrome/browser/ui/browser_command_controller.h"
 +#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 +#include "chrome/browser/ui/helium/workspaces/workspace_layout_geometry.h"
 +#include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -162,6 +163,8 @@
 +  }
 +  strip->AddObserver(this);
 +  tracking_ = true;
++  strip->SetNativeSplitTransition(
++      base::BindRepeating(&WorkspaceController::StopTracking, weak));
 +  strip->SetDisplayedTabsProvider(base::BindRepeating(
 +      [](base::WeakPtr<WorkspaceController> self) {
 +        return self ? self->GetDisplayedTabs()
@@ -187,7 +190,11 @@
 +    }
 +    return StartResult::kUnsupportedWindow;
 +  }
-+  return StartResult::kStarted;
++  if (auto* commands = chrome::BrowserCommandController::From(window_)) {
++    commands->TabStateChanged();
++  }
++  return weak && weak->tracking_ ? StartResult::kStarted
++                                 : StartResult::kUnsupportedWindow;
 +}
 +
 +void WorkspaceController::StopTracking() {
@@ -245,8 +252,12 @@
 +    if (was_tracking) {
 +      strip->ClearDisplayedTabsProvider();
 +    }
++    strip->SetNativeSplitTransition({});
 +    changing_tracking_ = was_changing;
 +    stopping_tracking_ = false;
++    if (auto* commands = chrome::BrowserCommandController::From(window_)) {
++      commands->TabStateChanged();
++    }
 +  }
 +  // Keep generators monotonic across re-enable, so stale IDs cannot alias.
 +}
@@ -823,6 +834,13 @@
 +    case TabStripModelChange::kSelectionOnly:
 +      break;
 +  }
++  // Confirmed final-tab removal belongs to Chromium's window-close/tear-out
++  // lifecycle. Retire our policy, do not manufacture a replacement tab or
++  // attempt an empty native presentation while the window is closing.
++  if (strip->empty()) {
++    StopTracking();
++    return;
++  }
 +  if (selection.new_tab && selection.active_tab_changed()) {
 +    CHECK(model_.RevealTab(KeyForTab(selection.new_tab)));
 +  }
@@ -1028,7 +1046,7 @@
 +#endif  // CHROME_BROWSER_UI_HELIUM_WORKSPACES_WORKSPACE_CONTROLLER_H_
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_controller_browsertest.cc
-@@ -0,0 +1,705 @@
+@@ -0,0 +1,811 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -1042,14 +1060,18 @@
 +#include "base/task/single_thread_task_runner.h"
 +#include "base/test/bind.h"
 +#include "base/test/scoped_feature_list.h"
++#include "chrome/app/chrome_command_ids.h"
 +#include "chrome/browser/profiles/profile.h"
 +#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/browser_command_controller.h"
++#include "chrome/browser/ui/browser_commands.h"
 +#include "chrome/browser/ui/tabs/split_tab_metrics.h"
 +#include "chrome/browser/ui/tabs/tab_model.h"
 +#include "chrome/browser/ui/tabs/tab_strip_model.h"
 +#include "chrome/browser/ui/views/frame/browser_view.h"
 +#include "chrome/browser/ui/views/frame/contents_container_view.h"
 +#include "chrome/browser/ui/views/frame/contents_web_view.h"
++#include "chrome/browser/ui/views/frame/multi_contents_view.h"
 +#include "chrome/browser/ui/views/frame/workspace_contents_view.h"
 +#include "chrome/test/base/in_process_browser_test.h"
 +#include "chrome/test/base/ui_test_utils.h"
@@ -1337,6 +1359,93 @@
 +  EXPECT_EQ(2, strip->count());
 +}
 +
++IN_PROC_BROWSER_TEST_F(WorkspaceControllerBrowserTest,
++                       NativeSplitPolicyYieldsBeforeRestoreAndTransfer) {
++  auto* strip = browser()->tab_strip_model();
++  strip->InsertWebContentsAt(1, NewContents(browser()), 0);
++  auto* controller = WorkspaceController::From(browser());
++  ASSERT_EQ(Result::kStarted, controller->StartTracking());
++  EXPECT_FALSE(strip->IsNativeSplitAllowed());
++  EXPECT_FALSE(BrowserView::GetBrowserViewForBrowser(browser())
++                   ->multi_contents_view()->IsDragAndDropEnabled());
++  EXPECT_FALSE(strip->IsContextMenuCommandEnabled(
++      0, TabStripModel::CommandAddToSplit));
++  EXPECT_FALSE(chrome::BrowserCommandController::From(browser())
++                   ->IsCommandEnabled(IDC_NEW_SPLIT_TAB));
++  chrome::NewSplitTab(browser(), split_tabs::SplitTabLayout::kSideBySide,
++                     split_tabs::SplitTabCreatedSource::kToolbarButton);
++  EXPECT_EQ(2, strip->count());
++  EXPECT_TRUE(controller->is_tracking());
++  const auto id = split_tabs::SplitTabId::GenerateNew();
++  strip->RestoreSplit(id, {0, 1}, split_tabs::SplitTabVisualData());
++  EXPECT_FALSE(controller->is_tracking());
++  EXPECT_TRUE(strip->IsNativeSplitAllowed());
++  EXPECT_TRUE(strip->ContainsSplit(id));
++  EXPECT_FALSE(BrowserView::GetBrowserViewForBrowser(browser())
++                   ->workspace_contents_view());
++  EXPECT_EQ(Result::kNativeSplitPresent, controller->StartTracking());
++
++  // Transferring a group containing a native split preserves both identities,
++  // rather than silently dissolving restored/native data at the destination.
++  strip->InsertWebContentsAt(2, NewContents(browser()), 0);
++  const auto group = strip->AddToNewGroup({0, 1});
++  Browser* other = CreateBrowser(browser()->GetProfile());
++  auto* destination = WorkspaceController::From(other);
++  ASSERT_EQ(Result::kStarted, destination->StartTracking());
++  auto detached = strip->DetachTabGroupForInsertion(group);
++  other->tab_strip_model()->InsertDetachedTabGroupAt(std::move(detached), 1);
++  EXPECT_FALSE(destination->is_tracking());
++  EXPECT_TRUE(other->tab_strip_model()->ContainsSplit(id));
++  EXPECT_EQ(group, other->tab_strip_model()->GetTabGroupForTab(1));
++  EXPECT_EQ(3, other->tab_strip_model()->count());
++
++  Browser* third = CreateBrowser(browser()->GetProfile());
++  auto* third_controller = WorkspaceController::From(third);
++  ASSERT_EQ(Result::kStarted, third_controller->StartTracking());
++  auto detached_split = other->tab_strip_model()->DetachSplitTabForInsertion(id);
++  third->tab_strip_model()->InsertDetachedSplitTabAt(
++      std::move(detached_split), 1, false, std::nullopt);
++  EXPECT_FALSE(third_controller->is_tracking());
++  EXPECT_TRUE(third->tab_strip_model()->ContainsSplit(id));
++  EXPECT_EQ(3, third->tab_strip_model()->count());
++}
++
++IN_PROC_BROWSER_TEST_F(WorkspaceControllerBrowserTest,
++                       StripMetadataPreservesTreeAndFinalDetachRetiresPolicy) {
++  auto* strip = browser()->tab_strip_model();
++  strip->InsertWebContentsAt(1, NewContents(browser()), 0);
++  strip->InsertWebContentsAt(2, NewContents(browser()), 0);
++  auto* controller = WorkspaceController::From(browser());
++  ASSERT_EQ(Result::kStarted, controller->StartTracking());
++  const auto root = controller->model().workspaces.front().root;
++  const auto children =
++      std::get<ContainerState>(controller->model().nodes.at(root)).children;
++  auto* tab = strip->GetTabAtIndex(2);
++  const auto key = controller->KeyForTab(tab);
++  strip->MoveWebContentsAt(2, 1, false);
++  strip->SetTabPinned(strip->GetIndexOfTab(tab), true);
++  EXPECT_EQ(key, controller->KeyForTab(tab));
++  EXPECT_EQ(children,
++            std::get<ContainerState>(controller->model().nodes.at(root)).children);
++  strip->SetTabPinned(strip->GetIndexOfTab(tab), false);
++  strip->AddToNewGroup({strip->GetIndexOfTab(tab)});
++  strip->RemoveFromGroup({strip->GetIndexOfTab(tab)});
++  EXPECT_EQ(children,
++            std::get<ContainerState>(controller->model().nodes.at(root)).children);
++  EXPECT_TRUE(controller->model().Validate());
++  while (strip->count() > 1) {
++    strip->DetachAndDeleteWebContentsAt(strip->count() - 1);
++    EXPECT_TRUE(controller->model().Validate());
++  }
++  auto detached = strip->DetachTabAtForInsertion(0);
++  EXPECT_TRUE(strip->empty());
++  EXPECT_FALSE(controller->is_tracking());
++  EXPECT_TRUE(strip->IsNativeSplitAllowed());
++  EXPECT_TRUE(controller->model().nodes.empty());
++  EXPECT_FALSE(BrowserView::GetBrowserViewForBrowser(browser())
++                   ->workspace_contents_view());
++}
++
 +// These assertions are authored for the compiled browser-test target. Runtime
 +// acceptance remains explicitly deferred; no test-only foreground publication.
 +IN_PROC_BROWSER_TEST_F(WorkspaceControllerBrowserTest,
@@ -1494,7 +1603,22 @@
 +  EXPECT_EQ(key, ActiveKey(*controller));
 +  EXPECT_TRUE(host->HasCommittedAttachment(key, contents));
 +  EXPECT_EQ(std::vector<tabs::TabInterface*>{tab}, strip->GetForegroundTabs());
-+  ASSERT_TRUE(content::ExecJs(contents, "window.onbeforeunload = null;"));
++  // The canceled request above changes no topology. A later confirmed close
++  // must retire exactly that association and leave the remaining tree valid.
++  request = {};
++  hide = {};
++  deactivate = {};
++  const auto handle = tab->GetHandle();
++  content::WebContentsDestroyedWatcher destroyed(contents);
++  strip->CloseWebContentsAt(0, TabCloseTypes::CLOSE_NONE);
++  dialog = ui_test_utils::WaitForAppModalDialog();
++  ASSERT_TRUE(dialog->is_before_unload_dialog());
++  dialog->view()->AcceptAppModalDialog();
++  destroyed.Wait();
++  EXPECT_FALSE(handle.Get());
++  EXPECT_FALSE(controller->ResolveTab(key));
++  EXPECT_EQ(1, strip->count());
++  EXPECT_TRUE(controller->model().Validate());
 +}
 +
 +IN_PROC_BROWSER_TEST_F(WorkspaceControllerBrowserTest,
@@ -1788,7 +1912,22 @@
      // Notify observers that the tab will be removed.
      for (auto& observer : observers_) {
        observer.OnTabWillBeRemoved(tab, index);
-@@ -1010,6 +1021,9 @@ gfx::Range TabStripModel::InsertDetached
+@@ -993,6 +1004,14 @@ gfx::Range TabStripModel::InsertDetached
+     std::optional<int> active_index,
+     base::OnceClosure execute_insert_detached_tabs_operation,
+     base::OnceClosure execute_tabs_notify_observer_operation) {
++  // Groups can contain splits too. Yield before ownership enters this strip,
++  // not in a post-insertion observer where native membership already exists.
++  for (const tabs::TabInterface* tab : *collection) {
++    if (tab->IsSplit()) {
++      PrepareNativeSplit();
++      break;
++    }
++  }
+   for (const tabs::TabInterface* tab : *collection) {
+     delegate()->WillAddWebContents(tab->GetContents());
+   }
+@@ -1010,6 +1029,9 @@ gfx::Range TabStripModel::InsertDetached
    TabStripSelectionChange selection(old_active_tab,
                                      selection_model().GetListSelectionModel());
    if (active_index.has_value()) {
@@ -1798,7 +1937,7 @@
      SetSelectedIndex(selection_model_,
                       collection_insertion_index + active_index.value());
    } else if (tab_strip_empty_initially) {
-@@ -1068,6 +1082,9 @@ std::unique_ptr<DetachedTab> TabStripMod
+@@ -1068,6 +1090,9 @@ std::unique_ptr<DetachedTab> TabStripMod
  
    const bool was_pinned_at_time_of_removal = tab->IsPinned();
  
@@ -1808,7 +1947,7 @@
    for (auto& observer : observers_) {
      observer.OnTabWillBeRemoved(tab, index_at_time_of_removal);
    }
-@@ -1351,6 +1368,11 @@ tabs::TabInterface* TabStripModel::GetAc
+@@ -1351,6 +1376,11 @@ tabs::TabInterface* TabStripModel::GetAc
  }
  
  std::vector<tabs::TabInterface*> TabStripModel::GetForegroundTabs() const {
@@ -1820,7 +1959,7 @@
    tabs::TabInterface* active_tab = GetActiveTab();
    if (!active_tab) {
      return std::vector<tabs::TabInterface*>();
-@@ -1361,6 +1383,77 @@ std::vector<tabs::TabInterface*> TabStri
+@@ -1361,6 +1391,77 @@ std::vector<tabs::TabInterface*> TabStri
    return std::vector<tabs::TabInterface*>{active_tab};
  }
  
@@ -1898,7 +2037,7 @@
  WebContents* TabStripModel::GetWebContentsAt(int index) const {
    if (ContainsIndex(index)) {
      return GetTabAtIndex(index)->GetContents();
-@@ -1603,6 +1696,11 @@ bool TabStripModel::IsTabInForeground(in
+@@ -1603,6 +1704,11 @@ bool TabStripModel::IsTabInForeground(in
      return false;
    }
  
@@ -1910,7 +2049,60 @@
    const tabs::TabInterface* active_tab = GetActiveTab();
    if (!active_tab) {
      return false;
-@@ -4100,10 +4198,10 @@ bool TabStripModel::CloseWebContentses(
+@@ -2121,11 +2227,25 @@ void TabStripModel::ReverseTabsInSplit(s
+                      first_tab->IsPinned(), false);
+ }
+ 
++void TabStripModel::SetNativeSplitTransition(base::RepeatingClosure transition) {
++  native_split_transition_ = std::move(transition);
++}
++
++void TabStripModel::PrepareNativeSplit() {
++  if (native_split_transition_) {
++    // The owner clears the installed callback while reversing its native host.
++    auto transition = native_split_transition_;
++    transition.Run();
++    CHECK(IsNativeSplitAllowed());
++  }
++}
++
+ split_tabs::SplitTabId TabStripModel::AddToNewSplit(
+     std::vector<int> indices,
+     split_tabs::SplitTabVisualData visual_data,
+     split_tabs::SplitTabCreatedSource source) {
+   ReentrancyCheck reentrancy_check(&reentrancy_guard_);
++  PrepareNativeSplit();
+ 
+   CHECK(indices.size() == 1u || indices.size() == 2u)
+       << "Invalid index count: " << indices.size();
+@@ -2169,6 +2289,7 @@ void TabStripModel::RestoreSplit(split_t
+                                  const std::vector<int>& indices,
+                                  split_tabs::SplitTabVisualData visual_data) {
+   ReentrancyCheck reentrancy_check(&reentrancy_guard_);
++  PrepareNativeSplit();
+   CHECK(std::ranges::is_sorted(indices));
+   CHECK_EQ(indices.size(), 2u);
+ 
+@@ -2715,7 +2836,7 @@ bool TabStripModel::IsContextMenuCommand
+     case CommandAddToSplit:
+     case CommandSwapWithActiveSplit:
+     case CommandArrangeSplit:
+-      return true;
++      return IsNativeSplitAllowed();
+ 
+     case CommandRemoveFromGroup:
+       return SupportsTabGroups();
+@@ -3317,6 +3438,9 @@ void TabStripModel::ExecuteAddToExisting
+ void TabStripModel::ExecuteAddToNewSplitCommand(
+     int context_index,
+     split_tabs::SplitTabLayout layout) {
++  if (!IsNativeSplitAllowed()) {
++    return;
++  }
+   base::UmaHistogramCounts1000("Tab.ContextMenu.AddToSplit.SelectedTabsCount",
+                                selection_model_.size());
+ 
+@@ -4100,10 +4224,10 @@ bool TabStripModel::CloseWebContentses(
    for (WebContents* contents : items) {
      const int index = GetIndexOfWebContents(contents);
      tabs::TabModel* tab_model = GetTabModelAtIndex(index);
@@ -1923,7 +2115,15 @@
        tab_model->WillBecomeHidden(base::PassKey<TabStripModel>());
      }
      tab_model->WillDetach(base::PassKey<TabStripModel>(),
-@@ -6109,9 +6207,18 @@ void TabStripModel::CreateHistoricalSpli
+@@ -4566,6 +4690,7 @@ split_tabs::SplitTabId TabStripModel::Ad
+     int pivot_index,
+     split_tabs::SplitTabVisualData visual_data,
+     SplitTabChange::SplitTabAddReason reason) {
++  CHECK(IsNativeSplitAllowed());
+   std::vector<tabs::TabInterface*> tabs = {};
+   for (int i : indices) {
+     tabs::TabInterface* tab = GetTabAtIndex(i);
+@@ -6109,9 +6234,18 @@ void TabStripModel::CreateHistoricalSpli
  }
  
  void TabStripModel::NotifyForegroundTabsWillEnterBackground() {
@@ -1954,10 +2154,17 @@
  #include "base/scoped_multi_source_observation.h"
  #include "base/scoped_observation.h"
  #include "base/time/time.h"
-@@ -440,6 +441,27 @@ class TabStripModel {
+@@ -440,6 +441,34 @@ class TabStripModel {
    // that split. Doesn't take into account occlusion.
    std::vector<tabs::TabInterface*> GetForegroundTabs() const;
  
++  // Alternate hosts disable native-split UI while installed. A low-level
++  // creation/restore/transfer cannot discard native split data: it synchronously
++  // yields the alternate host BEFORE admitting membership. The callback must
++  // complete reverse transfer and clear itself; it must not mutate strip tabs.
++  void SetNativeSplitTransition(base::RepeatingClosure transition);
++  bool IsNativeSplitAllowed() const { return !native_split_transition_; }
++
 +  // Supplies the set of tabs actually displayed by an alternate content host.
 +  // The callback is Views-independent so tab lifecycle code can protect every
 +  // displayed renderer without depending on BrowserView. The owner must clear
@@ -1982,19 +2189,21 @@
    // Returns the WebContents at the specified index, or NULL if there is
    // none.
    content::WebContents* GetWebContentsAt(int index) const;
-@@ -1457,6 +1479,8 @@ class TabStripModel {
+@@ -1457,6 +1486,9 @@ class TabStripModel {
        uint32_t close_types);
  
    void NotifyForegroundTabsWillEnterBackground();
++  void PrepareNativeSplit();
 +  void PrepareDisplayedTabDetach(tabs::TabInterface* tab);
 +  std::vector<tabs::TabInterface*> GetDisplayedTabs() const;
  
    // Prior to a split being removed, if the split is currently active, notify
    // the inactive tab(s) in the split will become hidden as a result of the
-@@ -1516,6 +1540,11 @@ class TabStripModel {
+@@ -1516,6 +1548,12 @@ class TabStripModel {
  
    // Tracks whether a modal UI is showing.
    bool showing_modal_ui_ = false;
++  base::RepeatingClosure native_split_transition_;
 +  DisplayedTabsProvider displayed_tabs_provider_;
 +  DisplayedTabsChange displayed_tabs_change_;
 +  DisplayedTabDetach displayed_tab_detach_;
@@ -3497,3 +3706,50 @@
    NodeId container() const { return container_; }
    NodeId selected_child() const { return selected_child_; }
    const std::vector<NodeId>& child_ids() const { return child_ids_; }
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -643,6 +643,10 @@ bool BrowserCommandController::SupportsC
+ }
+ 
+ bool BrowserCommandController::IsCommandEnabled(int id) const {
++  if (id == IDC_NEW_SPLIT_TAB &&
++      !browser_->tab_strip_model()->IsNativeSplitAllowed()) {
++    return false;
++  }
+   return command_updater_->IsCommandEnabled(id);
+ }
+ 
+@@ -2868,7 +2872,8 @@ void BrowserCommandController::UpdateCom
+                                          CanMoveActiveTabToNewWindow(browser_));
+   command_updater_->UpdateCommandEnabled(
+       IDC_NEW_SPLIT_TAB,
+-      browser_->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL);
++      browser_->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL &&
++          browser_->tab_strip_model()->IsNativeSplitAllowed());
+   command_updater_->UpdateCommandEnabled(IDC_GROUP_UNGROUPED_TABS,
+                                          CanGroupAllUngroupedTabs(browser_));
+ 
+--- a/chrome/browser/ui/browser_commands.cc
++++ b/chrome/browser/ui/browser_commands.cc
+@@ -1789,6 +1789,9 @@ void NewSplitTab(BrowserWindowInterface*
+                  split_tabs::SplitTabLayout layout,
+                  split_tabs::SplitTabCreatedSource source) {
+   TabStripModel* const tab_strip_model = browser->GetTabStripModel();
++  if (!tab_strip_model->IsNativeSplitAllowed()) {
++    return;
++  }
+   const int active_index = tab_strip_model->active_index();
+   // In Incognito mode, we can't show the regular Split View NTP so default to
+   // the regular NTP which renders special content when in Incognito.
+--- a/chrome/browser/ui/views/frame/multi_contents_view.cc
++++ b/chrome/browser/ui/views/frame/multi_contents_view.cc
+@@ -957,7 +957,8 @@ MultiContentsView::drop_target_controlle
+ 
+ bool MultiContentsView::IsDragAndDropEnabled() const {
+   // Split view drag and drop is only supported on normal browser types.
+-  if (!browser_view_->GetIsNormalType() || !is_drag_drop_pref_enabled_) {
++  if (!browser_view_->GetIsNormalType() || !is_drag_drop_pref_enabled_ ||
++      !browser_view_->browser()->tab_strip_model()->IsNativeSplitAllowed()) {
+     return false;
+   }
+ 

@@ -21,6 +21,13 @@
 fix; see `T10-closure-result.md`. Runtime remains **UNVERIFIED**; T11 may proceed.
 Both disabled gates and the no-public-exposure restriction remain in force.
 
+2026-09-17 — T11 implementation complete; see `I3-T11-result.md`. Native split
+model-boundary exclusion yields tiling before low-level native creation/restore/
+transfer, preserving native data; UI creation is disabled while tracking.
+Lifecycle regression sources compiled, NOT run. Runtime/ISC acceptance remains
+**UNVERIFIED**. Main agent should send the requested T11-complete ping, with human
+manual testing deferred until a runnable authorized build; no ready-build claim.
+
 This supersedes the earlier plan/workflow instruction to run applicable tests
 and the blocker report's proposed resource-restoration gate. It does not grant
 permission to restore resources, execute tests, or enable the incomplete mode.
