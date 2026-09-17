@@ -63,15 +63,13 @@
        vertical_tab_strip_state_controller_;
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_controller.cc
-@@ -0,0 +1,438 @@
+@@ -0,0 +1,488 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
 +
 +#include "chrome/browser/ui/helium/workspaces/workspace_controller.h"
 +
-+#include <cmath>
-+#include <limits>
 +#include <utility>
 +
 +#include "base/check.h"
@@ -84,6 +82,7 @@
 +#include "chrome/browser/ui/tabs/tab_strip_model.h"
 +#include "chrome/browser/ui/views/frame/browser_view.h"
 +#include "chrome/browser/ui/views/frame/workspace_contents_view.h"
++#include "components/tabs/public/split_tab_data.h"
 +#include "ui/compositor/compositor.h"
 +#include "ui/views/widget/widget.h"
 +
@@ -116,7 +115,7 @@
 +  if (HasNativeSplit()) {
 +    return StartResult::kNativeSplitPresent;
 +  }
-+  if (changing_tracking_ || presenting_host_) {
++  if (changing_tracking_ || stopping_tracking_ || presenting_host_) {
 +    return StartResult::kUnsupportedWindow;
 +  }
 +  if (is_tracking()) {
@@ -160,6 +159,9 @@
 +        return self ? self->GetDisplayedTabs()
 +                    : std::vector<tabs::TabInterface*>();
 +      }, weak));
++  strip->SetDisplayedTabsLifecycle(
++      base::BindRepeating(&WorkspaceController::ReconcileTabStripChange, weak),
++      base::BindRepeating(&WorkspaceController::DetachConfirmedTab, weak));
 +  const auto generation = ++generation_;
 +  auto* host = browser_view_->InstallWorkspaceContentsView();
 +  if (!weak)
@@ -178,16 +180,43 @@
 +}
 +
 +void WorkspaceController::StopTracking() {
++  if (stopping_tracking_) {
++    return;
++  }
++  // OnTabStripModelDestroyed may already have stopped observation. A later
++  // controller destructor must not fetch or clear a dead strip's policy.
++  if (!tracking_ && !browser_view_) {
++    activation_requests_.InvalidateWeakPtrs();
++    ++generation_;
++    return;
++  }
++  stopping_tracking_ = true;
++  auto weak = lifetime_.GetWeakPtr();
 +  activation_requests_.InvalidateWeakPtrs();
 +  ++generation_;
++  auto* strip = window_->GetTabStripModel();
++  if (tracking_) {
++    std::vector<tabs::TabInterface*> destination;
++    if (auto* active = strip->GetActiveTab()) {
++      destination.push_back(active);
++      if (active->GetSplit()) {
++        destination = strip->GetSplitData(*active->GetSplit())->ListTabs();
++      }
++    }
++    strip->PrepareDisplayedTabsChange(destination);
++    if (!weak) {
++      return;
++    }
++  }
 +  const bool was_tracking = std::exchange(tracking_, false);
 +  auto* browser_view = browser_view_.get();
 +  workspace_host_ = nullptr;
 +  browser_view_ = nullptr;
 +  // TabStripModelObserver owns its observation bookkeeping; ScopedObservation
 +  // is explicitly forbidden by TabStripModel.
-+  if (was_tracking)
-+    window_->GetTabStripModel()->ClearDisplayedTabsProvider();
++  // Keep the provider installed (empty during reverse transfer), so policy
++  // cannot claim the ordinary host before it has actually been reattached.
++  strip->SetDisplayedTabsLifecycle({}, {});
 +  StopObservingAll(this);
 +  subscriptions_.clear();
 +  tabs_.clear();
@@ -197,17 +226,23 @@
 +  // Clear policy and observation before callback-capable native teardown.
 +  // Block nested StartTracking until the reverse transfer has completed.
 +  const bool was_changing = std::exchange(changing_tracking_, true);
-+  auto weak = lifetime_.GetWeakPtr();
-+  if (browser_view)
++  if (browser_view) {
 +    browser_view->RemoveWorkspaceContentsView();
-+  if (weak)
++  }
++  if (weak) {
++    if (was_tracking) {
++      strip->ClearDisplayedTabsProvider();
++    }
 +    changing_tracking_ = was_changing;
++    stopping_tracking_ = false;
++  }
 +  // Keep generators monotonic across re-enable, so stale IDs cannot alias.
 +}
 +
 +bool WorkspaceController::RequestActivateTab(TabKey key,
 +                                             uint64_t expected_generation) {
-+  if (expected_generation != generation_ || !ResolveTab(key) ||
++  if (presenting_host_ || changing_tracking_ || stopping_tracking_ ||
++      expected_generation != generation_ || !ResolveTab(key) ||
 +      HasNativeSplit()) {
 +    return false;
 +  }
@@ -231,53 +266,15 @@
 +  if (!tab) {
 +    return;
 +  }
-+  // Predict the destination, never pass the old committed set as selection
-+  // intent. This copy does not publish tree state or foreground membership.
-+  // External selections still need the same pre-selection boundary.
-+  if (window_->GetTabStripModel()->GetActiveTab() != tab) {
-+    if (!workspace_host_)
-+      return;
-+    auto destination = model_;
-+    if (!destination.RevealTab(key))
-+      return;
-+    LayoutMetrics metrics;
-+    metrics.rtl = base::i18n::IsRTL();
-+    if (auto* widget = workspace_host_->GetWidget()) {
-+      if (auto* compositor = widget->GetCompositor())
-+        metrics.device_scale_factor = compositor->device_scale_factor();
-+    }
-+    const double width = std::round(workspace_host_->width() *
-+                                    metrics.device_scale_factor);
-+    const double height = std::round(workspace_host_->height() *
-+                                     metrics.device_scale_factor);
-+    if (!std::isfinite(width) || !std::isfinite(height) || width <= 0 ||
-+        height <= 0 || width > std::numeric_limits<int>::max() ||
-+        height > std::numeric_limits<int>::max())
-+      return;
-+    const auto geometry = CalculateWorkspaceGeometry(
-+        destination, static_cast<int>(width), static_cast<int>(height), metrics);
-+    if (!geometry.valid)
-+      return;
-+    std::vector<tabs::TabInterface*> displayed;
-+    for (const auto& leaf : geometry.leaves) {
-+      auto* resolved = ResolveTab(
-+          std::get<LeafState>(destination.nodes.at(leaf.node)).tab);
-+      if (!resolved)
-+        return;
-+      displayed.push_back(resolved);
-+    }
-+    if (displayed.empty())
-+      return;
-+    window_->GetTabStripModel()->SetPendingDisplayedTabsForSelection(
-+        std::move(displayed));
-+  }
++  // Internal and external selection use the same model lifecycle hook. Native
++  // preparation computes and validates the destination exactly once, including
++  // DIP representability, before issuing any hide notifications.
 +  // TabStripModel forbids reentrant mutations. Non-nestable dispatch prevents
 +  // nested UI loops from activating before the focus/observer stack unwinds.
 +  // Do not optimistically reveal a different page, and do not access this
 +  // controller after activation: synchronous observers can stop tracking or
 +  // destroy the window. The normal selection notification below commits the
-+  // selected ancestor path. TabStripModel consumes pending intent within its
-+  // selection transaction, including no-op selection. Nothing here may touch
++  // selected ancestor path. Nothing here may touch
 +  // the controller after synchronous activation returns.
 +  window_->GetTabStripModel()->ActivateTab(tab);
 +}
@@ -312,8 +309,10 @@
 +}
 +
 +bool WorkspaceController::PresentHost() {
-+  if (!tracking_ || !browser_view_ || !workspace_host_ || presenting_host_)
++  if (!tracking_ || stopping_tracking_ || !browser_view_ || !workspace_host_ ||
++      presenting_host_) {
 +    return false;
++  }
 +  auto weak = lifetime_.GetWeakPtr();
 +  presenting_host_ = true;
 +  base::ScopedClosureRunner finish(base::BindOnce(
@@ -366,8 +365,11 @@
 +        return true;
 +      }, weak, generation, host, bindings);
 +  if (bounds.IsEmpty() ||
-+      !host->Present(model, metrics, bindings, {}, std::move(is_current)))
++      !host->Present(model, metrics, bindings, {}, std::move(is_current),
++                     base::BindRepeating(
++                         &WorkspaceController::PrepareDisplayedTabs, weak))) {
 +    return abort();
++  }
 +  if (!weak || !tracking_ || generation_ != generation || workspace_host_ != host)
 +    return abort();
 +  SetDisplayedTabs(host->GetDisplayedTabKeys());
@@ -384,16 +386,17 @@
 +      return;
 +    }
 +  }
-+  // This is the committed projection. Pending selection state is reserved for
-+  // the one activation transaction below; leaving it set here permanently
-+  // shadows this provider and can make a detached tab disappear forever.
++  // Only successful native commit publishes keys. The provider additionally
++  // checks actual attachments while a later transaction is in progress.
 +  displayed_keys_ = std::move(keys);
 +}
 +
 +std::vector<tabs::TabInterface*> WorkspaceController::GetDisplayedTabs() const {
 +  std::vector<tabs::TabInterface*> displayed;
 +  for (TabKey key : displayed_keys_) {
-+    if (auto* tab = ResolveTab(key)) {
++    if (auto* tab = ResolveTab(key);
++        tab && workspace_host_ &&
++        workspace_host_->HasCommittedAttachment(key, tab->GetContents())) {
 +      displayed.push_back(tab);
 +    }
 +  }
@@ -427,8 +430,9 @@
 +void WorkspaceController::WillDetach(tabs::TabInterface* tab,
 +                                     tabs::TabInterface::DetachReason reason) {
 +  // Invalidate in-flight requests, but retain the committed displayed set.
-+  // Detach can be canceled (beforeunload) or become a cross-window move; the
-+  // kRemoved observer is the only point at which the model projection changes.
++  // Detach can be canceled (beforeunload) or become a cross-window move. Only
++  // the confirmed pre-removal hook retires attachments; kRemoved repairs the
++  // tree at the pre-Browser reconciliation boundary.
 +  ++generation_;
 +}
 +
@@ -440,10 +444,56 @@
 +  ++generation_;
 +}
 +
-+void WorkspaceController::OnTabStripModelChanged(
-+    TabStripModel* strip,
++void WorkspaceController::PrepareDisplayedTabs(
++    const std::vector<TabKey>& keys) {
++  std::vector<tabs::TabInterface*> destination;
++  for (auto key : keys) {
++    auto* tab = ResolveTab(key);
++    if (!tab) {
++      return;
++    }
++    destination.push_back(tab);
++  }
++  window_->GetTabStripModel()->PrepareDisplayedTabsChange(destination);
++}
++
++void WorkspaceController::DetachConfirmedTab(tabs::TabInterface* tab) {
++  const auto key = KeyForTab(tab);
++  if (!key || !workspace_host_) {
++    return;
++  }
++  activation_requests_.InvalidateWeakPtrs();
++  const auto generation = ++generation_;
++  auto weak = lifetime_.GetWeakPtr();
++  // Native detachment can request layout before kRemoved repairs the tree.
++  // Never let that callback re-present the still-associated outgoing leaf.
++  const bool was_presenting = std::exchange(presenting_host_, true);
++  base::ScopedClosureRunner finish(base::BindOnce(
++      [](base::WeakPtr<WorkspaceController> self, bool was_presenting) {
++        if (self)
++          self->presenting_host_ = was_presenting;
++      }, weak, was_presenting));
++  auto destination = displayed_keys_;
++  std::erase(destination, key);
++  PrepareDisplayedTabs(destination);
++  if (!weak || !tracking_ || generation_ != generation || !workspace_host_) {
++    return;
++  }
++  detaching_.insert(key);
++  workspace_host_->DetachTab(key);
++  if (!weak || !tracking_ || generation_ != generation) {
++    return;
++  }
++  displayed_keys_ = std::move(destination);
++}
++
++void WorkspaceController::ReconcileTabStripChange(
 +    const TabStripModelChange& change,
 +    const TabStripSelectionChange& selection) {
++  if (!tracking_ || stopping_tracking_) {
++    return;
++  }
++  auto* strip = window_->GetTabStripModel();
 +  if (HasNativeSplit()) {
 +    StopTracking();
 +    return;
@@ -580,8 +630,7 @@
 +
 +  // Commits the host's actual displayed leaves. This is deliberately separate
 +  // from model visibility: foreground/discard policy follows successful native
-+  // attachment, not a projected tree. May be called by the BrowserView host
-+  // before requesting activation so TabStripModel orders hide notifications.
++  // attachment, not a projected tree. Publication follows native commit.
 +  void SetDisplayedTabs(std::vector<TabKey> keys);
 +  bool PresentHost();
 +  // Called by BrowserView after its layout/scale pass. The host bounds are
@@ -605,10 +654,10 @@
 +  void WillDiscard(tabs::TabInterface* tab,
 +                   content::WebContents* old_contents,
 +                   content::WebContents* new_contents);
-+  void OnTabStripModelChanged(
-+      TabStripModel* tab_strip_model,
-+      const TabStripModelChange& change,
-+      const TabStripSelectionChange& selection) override;
++  void ReconcileTabStripChange(const TabStripModelChange& change,
++                               const TabStripSelectionChange& selection);
++  void PrepareDisplayedTabs(const std::vector<TabKey>& keys);
++  void DetachConfirmedTab(tabs::TabInterface* tab);
 +  void OnTabStripModelDestroyed(TabStripModel* tab_strip_model) override;
 +  void OnSplitTabChanged(const SplitTabChange& change) override;
 +
@@ -628,6 +677,7 @@
 +  uint64_t generation_ = 0;
 +  bool tracking_ = false;
 +  bool changing_tracking_ = false;
++  bool stopping_tracking_ = false;
 +  bool presenting_host_ = false;
 +
 +  ui::ScopedUnownedUserData<WorkspaceController> scoped_unowned_user_data_;
@@ -642,7 +692,7 @@
 +#endif  // CHROME_BROWSER_UI_HELIUM_WORKSPACES_WORKSPACE_CONTROLLER_H_
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_controller_browsertest.cc
-@@ -0,0 +1,314 @@
+@@ -0,0 +1,502 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -658,11 +708,18 @@
 +#include "chrome/browser/ui/tabs/split_tab_metrics.h"
 +#include "chrome/browser/ui/tabs/tab_model.h"
 +#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/contents_container_view.h"
++#include "chrome/browser/ui/views/frame/contents_web_view.h"
 +#include "chrome/browser/ui/views/frame/workspace_contents_view.h"
 +#include "chrome/test/base/in_process_browser_test.h"
++#include "chrome/test/base/ui_test_utils.h"
++#include "components/javascript_dialogs/app_modal_dialog_controller.h"
++#include "components/javascript_dialogs/app_modal_dialog_view.h"
 +#include "components/split_tabs/split_tab_visual_data.h"
 +#include "content/public/browser/web_contents.h"
 +#include "content/public/test/browser_test.h"
++#include "content/public/test/browser_test_utils.h"
 +
 +namespace helium::workspaces {
 +namespace {
@@ -937,6 +994,187 @@
 +  EXPECT_EQ(2, strip->count());
 +}
 +
++// These assertions are authored for the compiled browser-test target. Runtime
++// acceptance remains explicitly deferred; no test-only foreground publication.
++IN_PROC_BROWSER_TEST_F(WorkspaceControllerBrowserTest,
++                       ForegroundPreparationPrecedesNativeCommit) {
++  auto* strip = browser()->tab_strip_model();
++  strip->InsertWebContentsAt(1, NewContents(browser()), 0);
++  auto* controller = WorkspaceController::From(browser());
++  ASSERT_EQ(Result::kStarted, controller->StartTracking());
++  auto* first = strip->GetTabAtIndex(0);
++  auto* second = strip->GetTabAtIndex(1);
++  auto* host = BrowserView::GetBrowserViewForBrowser(browser())
++                   ->workspace_contents_view();
++  const auto first_key = controller->KeyForTab(first);
++  std::vector<std::string> events;
++  auto deactivate = first->RegisterWillDeactivate(
++      base::BindLambdaForTesting([&](tabs::TabInterface*) {
++        events.push_back("deactivate");
++        EXPECT_EQ(first, strip->GetActiveTab());
++        EXPECT_EQ(std::vector<tabs::TabInterface*>{first},
++                  strip->GetForegroundTabs());
++      }));
++  auto hide = first->RegisterWillBecomeHidden(
++      base::BindLambdaForTesting([&](tabs::TabInterface*) {
++        events.push_back("hide");
++        // Active identity has changed, but preparation has not detached the
++        // old page or optimistically published the incoming page.
++        EXPECT_EQ(second, strip->GetActiveTab());
++        EXPECT_TRUE(
++            host->HasCommittedAttachment(first_key, first->GetContents()));
++        EXPECT_EQ(std::vector<tabs::TabInterface*>{first},
++                  strip->GetForegroundTabs());
++        EXPECT_FALSE(strip->IsTabInForeground(1));
++      }));
++  auto activate = second->RegisterDidActivate(
++      base::BindLambdaForTesting([&](tabs::TabInterface*) {
++        events.push_back("activate");
++        EXPECT_EQ(std::vector<tabs::TabInterface*>{second},
++                  strip->GetForegroundTabs());
++        EXPECT_TRUE(host->HasCommittedAttachment(controller->KeyForTab(second),
++                                                 second->GetContents()));
++        EXPECT_FALSE(
++            host->HasCommittedAttachment(first_key, first->GetContents()));
++      }));
++  // Background insertion into a tabbed root does not hide or deactivate.
++  strip->InsertWebContentsAt(2, NewContents(browser()), 0);
++  EXPECT_TRUE(events.empty());
++  strip->ActivateTabAt(1);  // external selection uses the same preparation
++  EXPECT_EQ((std::vector<std::string>{"deactivate", "hide", "activate"}),
++            events);
++  strip->ActivateTabAt(0);
++  events.clear();
++  ASSERT_TRUE(controller->RequestActivateTab(controller->KeyForTab(second),
++                                             controller->generation()));
++  base::RunLoop().RunUntilIdle();
++  EXPECT_EQ((std::vector<std::string>{"deactivate", "hide", "activate"}),
++            events);
++}
++
++IN_PROC_BROWSER_TEST_F(WorkspaceControllerBrowserTest,
++                       ConfirmedTransferRetiresSourceAttachment) {
++  auto* strip = browser()->tab_strip_model();
++  strip->InsertWebContentsAt(1, NewContents(browser()), 0);
++  auto* controller = WorkspaceController::From(browser());
++  ASSERT_EQ(Result::kStarted, controller->StartTracking());
++  auto* tab = strip->GetActiveTab();
++  const auto key = controller->KeyForTab(tab);
++  auto* host = BrowserView::GetBrowserViewForBrowser(browser())
++                   ->workspace_contents_view();
++  std::vector<std::string> events;
++  auto request = tab->RegisterWillDetach(base::BindLambdaForTesting(
++      [&](tabs::TabInterface*, tabs::TabInterface::DetachReason) {
++        events.push_back("request");
++        EXPECT_EQ(tab, controller->ResolveTab(key));
++        EXPECT_TRUE(host->HasCommittedAttachment(key, tab->GetContents()));
++      }));
++  auto deactivate = tab->RegisterWillDeactivate(
++      base::BindLambdaForTesting([&](tabs::TabInterface*) {
++        events.push_back("deactivate");
++        EXPECT_EQ(tab, strip->GetActiveTab());
++      }));
++  auto hide = tab->RegisterWillBecomeHidden(
++      base::BindLambdaForTesting([&](tabs::TabInterface*) {
++        events.push_back("hide");
++        EXPECT_TRUE(host->HasCommittedAttachment(key, tab->GetContents()));
++        EXPECT_EQ(tab, controller->ResolveTab(key));
++      }));
++  bool saw_native_detach = false;
++  auto native_detach = host->GetContainerForTab(key)
++                           ->contents_view()
++                           ->AddWebContentsDetachedCallback(
++                               base::BindLambdaForTesting([&](views::WebView*) {
++                                 saw_native_detach = true;
++                                 controller->OnHostLayoutChanged();
++                                 EXPECT_FALSE(controller->ResolveTab(key));
++                                 EXPECT_FALSE(host->HasCommittedAttachment(
++                                     key, tab->GetContents()));
++                               }));
++  auto detached = strip->DetachTabAtForInsertion(0);
++  EXPECT_TRUE(saw_native_detach);
++  EXPECT_EQ((std::vector<std::string>{"request", "deactivate", "hide"}),
++            events);
++  EXPECT_FALSE(host->HasCommittedAttachment(key, detached->GetContents()));
++  EXPECT_FALSE(controller->ResolveTab(key));
++  EXPECT_FALSE(controller->KeyForTab(detached.get()));
++  EXPECT_EQ(std::vector<tabs::TabInterface*>{strip->GetActiveTab()},
++            strip->GetForegroundTabs());
++  // Disable retains the active command target; it is a host transfer, not an
++  // activation or a page entering background.
++  const auto before = events;
++  controller->StopTracking();
++  EXPECT_EQ(before, events);
++  EXPECT_EQ(std::vector<tabs::TabInterface*>{strip->GetActiveTab()},
++            strip->GetForegroundTabs());
++}
++
++IN_PROC_BROWSER_TEST_F(WorkspaceControllerBrowserTest,
++                       CanceledBeforeUnloadKeepsCommittedAttachment) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), GURL("data:text/html,<body>workspace</body>")));
++  auto* strip = browser()->tab_strip_model();
++  strip->InsertWebContentsAt(1, NewContents(browser()), 0);
++  auto* controller = WorkspaceController::From(browser());
++  ASSERT_EQ(Result::kStarted, controller->StartTracking());
++  auto* tab = strip->GetActiveTab();
++  auto* contents = tab->GetContents();
++  const auto key = controller->KeyForTab(tab);
++  auto* host = BrowserView::GetBrowserViewForBrowser(browser())
++                   ->workspace_contents_view();
++  ASSERT_TRUE(content::ExecJs(
++      contents, "window.onbeforeunload = () => 'keep workspace';"));
++  content::PrepContentsForBeforeUnloadTest(contents);
++  unsigned requests = 0;
++  unsigned hides = 0;
++  unsigned deactivations = 0;
++  auto request = tab->RegisterWillDetach(base::BindLambdaForTesting(
++      [&](tabs::TabInterface*, tabs::TabInterface::DetachReason) {
++        ++requests;
++        EXPECT_EQ(tab, controller->ResolveTab(key));
++        EXPECT_TRUE(host->HasCommittedAttachment(key, contents));
++      }));
++  auto hide = tab->RegisterWillBecomeHidden(
++      base::BindLambdaForTesting([&](tabs::TabInterface*) { ++hides; }));
++  auto deactivate = tab->RegisterWillDeactivate(base::BindLambdaForTesting(
++      [&](tabs::TabInterface*) { ++deactivations; }));
++  strip->CloseWebContentsAt(0, TabCloseTypes::CLOSE_NONE);
++  auto* dialog = ui_test_utils::WaitForAppModalDialog();
++  ASSERT_TRUE(dialog->is_before_unload_dialog());
++  EXPECT_GT(requests, 0u);
++  EXPECT_EQ(0u, hides);
++  EXPECT_EQ(0u, deactivations);
++  EXPECT_TRUE(host->HasCommittedAttachment(key, contents));
++  dialog->view()->CancelAppModalDialog();
++  EXPECT_EQ(tab, strip->GetActiveTab());
++  EXPECT_EQ(tab, controller->ResolveTab(key));
++  EXPECT_EQ(key, ActiveKey(*controller));
++  EXPECT_TRUE(host->HasCommittedAttachment(key, contents));
++  EXPECT_EQ(std::vector<tabs::TabInterface*>{tab}, strip->GetForegroundTabs());
++  ASSERT_TRUE(content::ExecJs(contents, "window.onbeforeunload = null;"));
++}
++
++IN_PROC_BROWSER_TEST_F(WorkspaceControllerBrowserTest,
++                       StopDuringPreparationInvalidatesNativeCommit) {
++  auto* strip = browser()->tab_strip_model();
++  strip->InsertWebContentsAt(1, NewContents(browser()), 0);
++  auto* controller = WorkspaceController::From(browser());
++  ASSERT_EQ(Result::kStarted, controller->StartTracking());
++  unsigned hides = 0;
++  auto subscription = strip->GetActiveTab()->RegisterWillBecomeHidden(
++      base::BindLambdaForTesting([&](tabs::TabInterface*) {
++        ++hides;
++        controller->StopTracking();
++      }));
++  strip->ActivateTabAt(1);
++  EXPECT_EQ(1u, hides);
++  EXPECT_FALSE(controller->is_tracking());
++  EXPECT_FALSE(BrowserView::GetBrowserViewForBrowser(browser())
++                   ->workspace_contents_view());
++  EXPECT_EQ(std::vector<tabs::TabInterface*>{strip->GetActiveTab()},
++            strip->GetForegroundTabs());
++}
++
 +class WorkspaceControllerDisabledBrowserTest : public InProcessBrowserTest {
 + public:
 +  WorkspaceControllerDisabledBrowserTest() {
@@ -959,7 +1197,79 @@
 +}  // namespace helium::workspaces
 --- a/chrome/browser/ui/tabs/tab_strip_model.cc
 +++ b/chrome/browser/ui/tabs/tab_strip_model.cc
-@@ -1351,6 +1351,11 @@ tabs::TabInterface* TabStripModel::GetAc
+@@ -636,10 +636,10 @@ std::unique_ptr<DetachedTab> TabStripMod
+                                        "trying to detach web contents.";
+   tabs::TabModel* active_tab_model = GetActiveTabModel();
+   tabs::TabModel* tab_model = GetTabModelAtIndex(index);
+-  if (index == active_index() && !closing_all_) {
++  if (!displayed_tabs_provider_ && index == active_index() && !closing_all_) {
+     tab_model->WillDeactivate(base::PassKey<TabStripModel>());
+   }
+-  if (tab_model->IsVisible()) {
++  if (!displayed_tabs_provider_ && tab_model->IsVisible()) {
+     tab_model->WillBecomeHidden(base::PassKey<TabStripModel>());
+   }
+   tab_model->WillDetach(base::PassKey<TabStripModel>(), tab_detach_reason);
+@@ -833,6 +833,16 @@ tabs::TabModel* TabStripModel::GetActive
+ void TabStripModel::OnChange(const TabStripModelChange& change,
+                              const TabStripSelectionChange& selection) {
+   CompleteModelUpdateTransaction();
++  // The alternate host must finish its native commit before Browser observes
++  // selection/removal. Copy the callback: reconciliation may clear the policy.
++  auto reconcile = displayed_tabs_change_;
++  auto weak = weak_factory_.GetWeakPtr();
++  if (reconcile) {
++    reconcile.Run(change, selection);
++  }
++  if (!weak) {
++    return;
++  }
+   OnActiveTabChanged(selection);
+ 
+   for (auto& observer : observers_) {
+@@ -853,11 +863,11 @@ TabStripModelChange::Remove TabStripMode
+     tabs::TabModel* tab = GetTabModelAtIndex(index);
+ 
+     // If the tab is active, notify it that it's going to be deactivated:
+-    if (tab == active_tab_model) {
++    if (!displayed_tabs_provider_ && tab == active_tab_model) {
+       tab->WillDeactivate(base::PassKey<TabStripModel>());
+     }
+     // If the tab is visible, notify it that it's going to be hidden:
+-    if (tab->IsVisible()) {
++    if (!displayed_tabs_provider_ && tab->IsVisible()) {
+       tab->WillBecomeHidden(base::PassKey<TabStripModel>());
+     }
+ 
+@@ -865,6 +875,7 @@ TabStripModelChange::Remove TabStripMode
+     tab->WillDetach(base::PassKey<TabStripModel>(),
+                     tabs::TabInterface::DetachReason::kInsertIntoOtherWindow);
+ 
++    PrepareDisplayedTabDetach(tab);
+     // Notify observers that the tab will be removed.
+     for (auto& observer : observers_) {
+       observer.OnTabWillBeRemoved(tab, index);
+@@ -1010,6 +1021,9 @@ gfx::Range TabStripModel::InsertDetached
+   TabStripSelectionChange selection(old_active_tab,
+                                     selection_model().GetListSelectionModel());
+   if (active_index.has_value()) {
++    if (displayed_tabs_provider_ && old_active_tab) {
++      NotifyForegroundTabsWillEnterBackground();
++    }
+     SetSelectedIndex(selection_model_,
+                      collection_insertion_index + active_index.value());
+   } else if (tab_strip_empty_initially) {
+@@ -1068,6 +1082,9 @@ std::unique_ptr<DetachedTab> TabStripMod
+ 
+   const bool was_pinned_at_time_of_removal = tab->IsPinned();
+ 
++  // Unlike WillDetach(kDelete), this is after beforeunload accepted closure.
++  // Retire the native attachment while the tab still belongs to this window.
++  PrepareDisplayedTabDetach(tab);
+   for (auto& observer : observers_) {
+     observer.OnTabWillBeRemoved(tab, index_at_time_of_removal);
+   }
+@@ -1351,6 +1368,11 @@ tabs::TabInterface* TabStripModel::GetAc
  }
  
  std::vector<tabs::TabInterface*> TabStripModel::GetForegroundTabs() const {
@@ -971,31 +1281,77 @@
    tabs::TabInterface* active_tab = GetActiveTab();
    if (!active_tab) {
      return std::vector<tabs::TabInterface*>();
-@@ -1361,6 +1366,31 @@ std::vector<tabs::TabInterface*> TabStri
+@@ -1361,6 +1383,77 @@ std::vector<tabs::TabInterface*> TabStri
    return std::vector<tabs::TabInterface*>{active_tab};
  }
  
 +void TabStripModel::SetDisplayedTabsProvider(DisplayedTabsProvider provider) {
++  ++displayed_tabs_epoch_;
 +  displayed_tabs_provider_ = std::move(provider);
 +}
 +
 +void TabStripModel::ClearDisplayedTabsProvider() {
++  ++displayed_tabs_epoch_;
 +  displayed_tabs_provider_.Reset();
-+  pending_displayed_tabs_for_selection_.reset();
++  displayed_tabs_change_.Reset();
++  displayed_tab_detach_.Reset();
 +}
 +
-+void TabStripModel::SetPendingDisplayedTabsForSelection(
-+    std::vector<tabs::TabInterface*> tabs) {
-+  // Empty input is an aborted projection, not an empty foreground override.
-+  pending_displayed_tabs_for_selection_.reset();
-+  if (!tabs.empty()) {
-+    pending_displayed_tabs_for_selection_ = std::move(tabs);
++void TabStripModel::SetDisplayedTabsLifecycle(DisplayedTabsChange change,
++                                              DisplayedTabDetach detach) {
++  displayed_tabs_change_ = std::move(change);
++  displayed_tab_detach_ = std::move(detach);
++}
++
++void TabStripModel::PrepareDisplayedTabsChange(
++    const std::vector<tabs::TabInterface*>& destination) {
++  std::vector<tabs::TabHandle> outgoing;
++  for (auto* tab : GetForegroundTabs()) {
++    if (!std::ranges::contains(destination, tab) &&
++        !std::ranges::contains(notifying_hidden_tabs_, tab->GetHandle())) {
++      outgoing.push_back(tab->GetHandle());
++    }
++  }
++  auto weak = weak_factory_.GetWeakPtr();
++  const auto epoch = displayed_tabs_epoch_;
++  const size_t already_notified = notifying_hidden_tabs_.size();
++  for (auto handle : outgoing) {
++    if (auto* tab = handle.Get()) {
++      notifying_hidden_tabs_.push_back(handle);
++      static_cast<tabs::TabModel*>(tab)->WillBecomeHidden(
++          base::PassKey<TabStripModel>());
++      if (!weak) {
++        return;
++      }
++      // Retain delivered notifications across the entire preparation callback
++      // stack. A nested disable must not re-notify an earlier outgoing leaf.
++      if (displayed_tabs_epoch_ != epoch) {
++        break;
++      }
++    }
++  }
++  notifying_hidden_tabs_.resize(already_notified);
++}
++
++void TabStripModel::PrepareDisplayedTabDetach(tabs::TabInterface* tab) {
++  if (!displayed_tab_detach_) {
++    return;
++  }
++  auto detach = displayed_tab_detach_;
++  auto weak = weak_factory_.GetWeakPtr();
++  auto handle = tab->GetHandle();
++  if (tab == GetActiveTab()) {
++    static_cast<tabs::TabModel*>(tab)->WillDeactivate(
++        base::PassKey<TabStripModel>());
++  }
++  if (weak && handle.Get() && displayed_tab_detach_) {
++    detach.Run(handle.Get());
 +  }
 +}
 +
 +std::vector<tabs::TabInterface*> TabStripModel::GetDisplayedTabs() const {
-+  // Foreground queries always describe committed native attachments. Pending
-+  // selection intent is consumed only by the transition notification below.
++  // Foreground queries describe committed native attachments only. The
++  // preparation destination is never installed as a foreground override.
 +  return displayed_tabs_provider_ ? displayed_tabs_provider_.Run()
 +                                  : std::vector<tabs::TabInterface*>();
 +}
@@ -1003,53 +1359,52 @@
  WebContents* TabStripModel::GetWebContentsAt(int index) const {
    if (ContainsIndex(index)) {
      return GetTabAtIndex(index)->GetContents();
-@@ -1603,6 +1633,11 @@ bool TabStripModel::IsTabInForeground(in
+@@ -1603,6 +1696,11 @@ bool TabStripModel::IsTabInForeground(in
      return false;
    }
  
 +  const auto displayed = GetDisplayedTabs();
-+  if (!displayed.empty()) {
++  if (displayed_tabs_provider_) {
 +    return std::ranges::find(displayed, GetTabAtIndex(index)) != displayed.end();
 +  }
 +
    const tabs::TabInterface* active_tab = GetActiveTab();
    if (!active_tab) {
      return false;
-@@ -4214,6 +4249,10 @@ TabStripSelectionChange TabStripModel::S
+@@ -4100,10 +4198,10 @@ bool TabStripModel::CloseWebContentses(
+   for (WebContents* contents : items) {
+     const int index = GetIndexOfWebContents(contents);
+     tabs::TabModel* tab_model = GetTabModelAtIndex(index);
+-    if (index == active_index() && !closing_all_) {
++    if (!displayed_tabs_provider_ && index == active_index() && !closing_all_) {
+       tab_model->WillDeactivate(base::PassKey<TabStripModel>());
      }
-   }
- 
-+  // Consume even a no-op selection, before invoking observers. A pending
-+  // projection must never leak into a later unrelated selection transaction.
-+  pending_displayed_tabs_for_selection_.reset();
-+
-   // This is done after notifying TabDeactivated() because caller can assume
-   // that TabStripModel::active_index() would return the index for
-   // |selection.old_contents|.
-@@ -6109,13 +6148,19 @@ void TabStripModel::CreateHistoricalSpli
+-    if (tab_model->IsVisible() && !closing_all_) {
++    if (!displayed_tabs_provider_ && tab_model->IsVisible() && !closing_all_) {
+       tab_model->WillBecomeHidden(base::PassKey<TabStripModel>());
+     }
+     tab_model->WillDetach(base::PassKey<TabStripModel>(),
+@@ -6109,9 +6207,18 @@ void TabStripModel::CreateHistoricalSpli
  }
  
  void TabStripModel::NotifyForegroundTabsWillEnterBackground() {
 -  for (tabs::TabInterface* tab : GetForegroundTabs()) {
++  // Activation and visibility are different transitions. The host prepares
++  // hiding only after validating its actual DIP-representable destination.
++  if (displayed_tabs_provider_) {
++    if (auto* active = GetActiveTabModel()) {
++      active->WillDeactivate(base::PassKey<TabStripModel>());
++    }
++    return;
++  }
 +  const auto old_foreground = GetForegroundTabs();
-+  auto pending = std::exchange(pending_displayed_tabs_for_selection_,
-+                               std::nullopt);
-+  const auto new_displayed = pending ? std::move(*pending) : GetDisplayedTabs();
 +  for (tabs::TabInterface* tab : old_foreground) {
      if (tab->IsActivated()) {
 -      static_cast<tabs::TabModel*>(GetActiveTab())
 +      static_cast<tabs::TabModel*>(tab)
            ->WillDeactivate(base::PassKey<TabStripModel>());
      }
--    static_cast<tabs::TabModel*>(tab)->WillBecomeHidden(
--        base::PassKey<TabStripModel>());
-+    if (std::ranges::find(new_displayed, tab) == new_displayed.end()) {
-+      static_cast<tabs::TabModel*>(tab)->WillBecomeHidden(
-+          base::PassKey<TabStripModel>());
-+    }
-   }
- }
- 
+     static_cast<tabs::TabModel*>(tab)->WillBecomeHidden(
 --- a/chrome/browser/ui/tabs/tab_strip_model.h
 +++ b/chrome/browser/ui/tabs/tab_strip_model.h
 @@ -21,6 +21,7 @@
@@ -1060,7 +1415,7 @@
  #include "base/scoped_multi_source_observation.h"
  #include "base/scoped_observation.h"
  #include "base/time/time.h"
-@@ -440,6 +441,19 @@ class TabStripModel {
+@@ -440,6 +441,27 @@ class TabStripModel {
    // that split. Doesn't take into account occlusion.
    std::vector<tabs::TabInterface*> GetForegroundTabs() const;
  
@@ -1072,29 +1427,40 @@
 +      base::RepeatingCallback<std::vector<tabs::TabInterface*>()>;
 +  void SetDisplayedTabsProvider(DisplayedTabsProvider provider);
 +  void ClearDisplayedTabsProvider();
-+  // Used by a host transaction before ActivateTab reaches SetSelection. The
-+  // next foreground transition hides only tabs absent from this projection.
-+  void SetPendingDisplayedTabsForSelection(
-+      std::vector<tabs::TabInterface*> tabs);
++  // Reconcile committed host attachments before Browser and other observers
++  // consume a confirmed strip change. This is not an observer-order dependency.
++  using DisplayedTabsChange =
++      base::RepeatingCallback<void(const TabStripModelChange&,
++                                   const TabStripSelectionChange&)>;
++  using DisplayedTabDetach = base::RepeatingCallback<void(tabs::TabInterface*)>;
++  void SetDisplayedTabsLifecycle(DisplayedTabsChange change,
++                                 DisplayedTabDetach detach);
++  // Called only after native geometry/bindings have been validated, immediately
++  // before outgoing attachments are removed. Intent never changes foreground.
++  void PrepareDisplayedTabsChange(
++      const std::vector<tabs::TabInterface*>& destination);
 +
    // Returns the WebContents at the specified index, or NULL if there is
    // none.
    content::WebContents* GetWebContentsAt(int index) const;
-@@ -1457,6 +1471,7 @@ class TabStripModel {
+@@ -1457,6 +1479,8 @@ class TabStripModel {
        uint32_t close_types);
  
    void NotifyForegroundTabsWillEnterBackground();
++  void PrepareDisplayedTabDetach(tabs::TabInterface* tab);
 +  std::vector<tabs::TabInterface*> GetDisplayedTabs() const;
  
    // Prior to a split being removed, if the split is currently active, notify
    // the inactive tab(s) in the split will become hidden as a result of the
-@@ -1516,6 +1531,9 @@ class TabStripModel {
+@@ -1516,6 +1540,11 @@ class TabStripModel {
  
    // Tracks whether a modal UI is showing.
    bool showing_modal_ui_ = false;
 +  DisplayedTabsProvider displayed_tabs_provider_;
-+  std::optional<std::vector<tabs::TabInterface*>>
-+      pending_displayed_tabs_for_selection_;
++  DisplayedTabsChange displayed_tabs_change_;
++  DisplayedTabDetach displayed_tab_detach_;
++  uint64_t displayed_tabs_epoch_ = 0;
++  std::vector<tabs::TabHandle> notifying_hidden_tabs_;
  
    // Timestamp when the current focus mode session began, if active.
    std::optional<base::TimeTicks> focus_mode_session_start_time_;
@@ -1401,14 +1767,15 @@
  #include "content/public/browser/web_contents.h"
  #include "ui/base/metadata/metadata_impl_macros.h"
  #include "ui/color/color_id.h"
-@@ -46,11 +51,26 @@ bool WorkspaceContentsView::Present(
+@@ -46,11 +51,27 @@ bool WorkspaceContentsView::Present(
      const WorkspaceLayoutModel& model,
      const LayoutMetrics& metrics,
      const std::map<TabKey, content::WebContents*>& contents,
 -    const WorkspaceTabbedHeaderView::Titles& titles) {
 -  if (presenting_) {
 +    const WorkspaceTabbedHeaderView::Titles& titles,
-+    base::RepeatingCallback<bool()> is_current) {
++    base::RepeatingCallback<bool()> is_current,
++    base::RepeatingCallback<void(const std::vector<TabKey>&)> prepare) {
 +  if (clearing_ || presenting_ ||
 +      std::ranges::any_of(dividers_, [](const auto& divider) {
 +        return divider->is_resizing();
@@ -1431,7 +1798,7 @@
    const double scale = metrics.device_scale_factor;
    const double pixel_width = std::round(width() * scale);
    const double pixel_height = std::round(height() * scale);
-@@ -80,11 +100,13 @@ bool WorkspaceContentsView::Present(
+@@ -80,11 +101,13 @@ bool WorkspaceContentsView::Present(
      return gfx::Rect(x, y, edge(r.x + r.width, pixel_width, width()) - x,
                       edge(r.y + r.height, pixel_height, height()) - y);
    };
@@ -1447,7 +1814,7 @@
      if (it == contents.end() || !it->second ||
          it->second->GetBrowserContext() != browser_view_->GetProfile() ||
          !unique.insert(it->second).second) {
-@@ -96,7 +118,8 @@ bool WorkspaceContentsView::Present(
+@@ -96,7 +119,8 @@ bool WorkspaceContentsView::Present(
        return false;
      }
      bounds.push_back(rect);
@@ -1457,7 +1824,7 @@
    }
  
    std::vector<std::unique_ptr<WorkspaceTabbedHeaderView>> headers;
-@@ -159,34 +182,197 @@ bool WorkspaceContentsView::Present(
+@@ -159,34 +183,207 @@ bool WorkspaceContentsView::Present(
      }
    }
  
@@ -1467,6 +1834,16 @@
 -  for (size_t i = 0; i < resolved.size(); ++i) {
 -    auto* container =
 -        AddChildView(std::make_unique<ContentsContainerView>(browser_view_));
++  // This is the shared preparation boundary: all binding and physical-to-DIP
++  // validation is complete, and no native attachment has changed. Prediction
++  // is deliberately local; only the successful commit publishes new keys.
++  if (prepare) {
++    prepare.Run(keys);
++  }
++  if (!current()) {
++    return false;
++  }
++
 +  // Retain native hosts by tab identity, not by geometry slot or WebContents.
 +  // A focus/weight/viewport change must not detach still-displayed pages (which
 +  // would hide renderers and discard native focus). Replacement retains the
@@ -1564,14 +1941,14 @@
 +    ReorderChildView(headers_.back(), containers_.size() + headers_.size() - 1);
 +    if (!current())
 +      return false;
-   }
++  }
 +  while (!old_headers.empty()) {
 +    auto* retired = old_headers.back().get();
 +    old_headers.pop_back();
 +    RemoveChildViewT(retired);
 +    if (!current())
 +      return false;
-+  }
+   }
 +  auto old_dividers = std::move(dividers_);
 +  dividers_.clear();
    for (auto& divider : dividers) {
@@ -1601,15 +1978,15 @@
 +                     containers_.size() + headers_.size() + dividers_.size() - 1);
 +    if (!current())
 +      return false;
-+  }
+   }
+-  if (!selection.IsEmpty()) {
 +  while (!old_dividers.empty()) {
 +    auto* retired = old_dividers.back().get();
 +    old_dividers.pop_back();
 +    RemoveChildViewT(retired);
 +    if (!current())
 +      return false;
-   }
--  if (!selection.IsEmpty()) {
++  }
 +  if (!selection_outline_ && !selection.IsEmpty()) {
      // A thick square outline of the structural subtree, independent of native
      // rounded page-focus borders and the header's selected-child bottom rule.
@@ -1668,7 +2045,7 @@
    }
    return true;
  }
-@@ -211,28 +397,69 @@ gfx::Rect WorkspaceContentsView::selecti
+@@ -211,28 +408,103 @@ gfx::Rect WorkspaceContentsView::selecti
    return selection_outline_ ? selection_outline_->bounds() : gfx::Rect();
  }
  
@@ -1695,10 +2072,44 @@
      RemoveChildViewT(header);
 +    if (!weak)
 +      return;
++  }
++}
++
++bool WorkspaceContentsView::HasCommittedAttachment(
++    TabKey key,
++    content::WebContents* contents) const {
++  auto it = leaves_.find(key);
++  return contents && std::ranges::contains(displayed_keys_, key) &&
++         it != leaves_.end() &&
++         it->second.container->contents_view()->web_contents() == contents;
++}
++
++void WorkspaceContentsView::DetachTab(TabKey key) {
++  // Cancel in-flight presentation and captured controls before retiring a leaf.
++  presentation_.InvalidateWeakPtrs();
++  presenting_ = false;
++  auto weak = presentation_.GetWeakPtr();
++  auto it = leaves_.find(key);
++  if (it != leaves_.end()) {
++    auto* container = it->second.container.get();
++    it->second.border_controller.reset();
++    leaves_.erase(it);
++    std::erase(displayed_keys_, key);
++    std::erase(containers_, container);
++    container->contents_view()->set_is_primary_web_contents_for_window(false);
++    container->contents_view()->SetWebContents(nullptr);
++    if (!weak) {
++      return;
++    }
++    RemoveChildViewT(container);
++    if (!weak) {
++      return;
++    }
    }
 -  while (!containers_.empty()) {
 -    auto* container = containers_.back().get();
 -    containers_.pop_back();
++  ClearControls();
 +}
 +
 +void WorkspaceContentsView::Clear() {
@@ -1783,28 +2194,39 @@
  class WorkspaceContentsView : public views::View {
    METADATA_HEADER(WorkspaceContentsView, views::View)
  
-@@ -45,10 +47,14 @@ class WorkspaceContentsView : public vie
+@@ -45,10 +47,16 @@ class WorkspaceContentsView : public vie
    // Validates the entire displayed binding set before changing native views.
    // Native headers are display-only here; all host events remain suppressed.
    // Dividers also have null callbacks. Titles may include hidden page keys.
+-  bool Present(const WorkspaceLayoutModel& model,
+-               const LayoutMetrics& metrics,
+-               const std::map<TabKey, content::WebContents*>& contents,
+-               const WorkspaceTabbedHeaderView::Titles& titles = {});
 +  // The controller supplies is_current to validate generation and live bindings
 +  // after native callbacks. False aborts presentation; the controller must
 +  // reverse the transfer, since attachments may already have changed.
-   bool Present(const WorkspaceLayoutModel& model,
-                const LayoutMetrics& metrics,
-                const std::map<TabKey, content::WebContents*>& contents,
--               const WorkspaceTabbedHeaderView::Titles& titles = {});
-+               const WorkspaceTabbedHeaderView::Titles& titles = {},
-+               base::RepeatingCallback<bool()> is_current = {});
++  bool Present(
++      const WorkspaceLayoutModel& model,
++      const LayoutMetrics& metrics,
++      const std::map<TabKey, content::WebContents*>& contents,
++      const WorkspaceTabbedHeaderView::Titles& titles = {},
++      base::RepeatingCallback<bool()> is_current = {},
++      base::RepeatingCallback<void(const std::vector<TabKey>&)> prepare = {});
    // Refresh labels without detaching pages or changing selection.
    void UpdateTitles(const WorkspaceTabbedHeaderView::Titles& titles);
    std::vector<WorkspaceTabbedHeaderView*> GetHeaders() const;
-@@ -57,17 +63,32 @@ class WorkspaceContentsView : public vie
+@@ -56,18 +64,37 @@ class WorkspaceContentsView : public vie
+   // Empty if selection is hidden or a container is in constrained projection.
    gfx::Rect selection_bounds() const;
    void Clear();
- 
+-
 -  // Tree order, only currently attached leaves. Pointers expire on
 -  // Present/Clear.
++  // Confirmed removal only: retire attachments before TabModel leaves its
++  // source window. Does not mutate workspace topology.
++  void DetachTab(TabKey key);
++  bool HasCommittedAttachment(TabKey key, content::WebContents* contents) const;
++
 +  // Tree order, only currently attached leaves. A container is retained while
 +  // its stable TabKey remains displayed, including contents replacement. It
 +  // expires when that key leaves the displayed set or on Clear().
