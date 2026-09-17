@@ -1,25 +1,35 @@
+--- a/chrome/browser/ui/views/tabs/common/tab_view_vertical_layout.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_view_vertical_layout.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/ui/views/tabs/common/tab_view_vertical_layout.h"
+ 
++#include "base/command_line.h"
+ #include "chrome/browser/glic/browser_ui/tab_underline_view.h"
+ #include "chrome/browser/ui/layout_constants.h"
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+@@ -170,6 +171,10 @@ bool TabViewVerticalLayout::IsChildVisib
+       return false;
+     }
+ 
++    if (base::CommandLine::ForCurrentProcess()->HasSwitch("hide-tab-close-buttons")) {
++      return false;
++    }
++
+     // When uncollapsing the tabstrip, intentionally start showing the close
+     // button on active non-hovered tabs a little bit sooner than reaching the
+     // uncollapsed min width, because otherwise the close buttons in a grouped
 --- a/chrome/browser/ui/views/tabs/tab.cc
 +++ b/chrome/browser/ui/views/tabs/tab.cc
-@@ -1178,7 +1178,11 @@ void Tab::UpdateIconVisibility() {
-     // Close button is shown on active tabs regardless of the size.
-     showing_close_button_ = true;
+@@ -1351,7 +1351,7 @@ void Tab::UpdateIconVisibility() {
+   const bool should_show_close_button =
+       !IsLockedForOnTask(controller_->GetBrowserWindowInterface());
+ #else
+-  const bool should_show_close_button = true;
++  const bool should_show_close_button = !base::CommandLine::ForCurrentProcess()->HasSwitch("hide-tab-close-buttons");
  #endif  // BUILDFLAG(IS_CHROMEOS)
-+    if (base::CommandLine::ForCurrentProcess()->HasSwitch("hide-tab-close-buttons")) {
-+      showing_close_button_ = false;
-+    } else {
-     available_width -= close_button_width;
-+    }
  
-     showing_alert_indicator_ =
-         has_alert_icon && alert_icon_width <= available_width;
-@@ -1207,6 +1211,7 @@ void Tab::UpdateIconVisibility() {
-         controller_->GetTabCount() >=
-             TabStyle::kTabStripDeclutterMinTabsForCloseHide;
-     showing_close_button_ =
-+        !base::CommandLine::ForCurrentProcess()->HasSwitch("hide-tab-close-buttons") &&
- #if BUILDFLAG(IS_CHROMEOS)
-         should_show_close_button &&
- #endif
+   if (IsActive()) {
 --- a/chrome/browser/ungoogled_flag_entries.h
 +++ b/chrome/browser/ungoogled_flag_entries.h
 @@ -72,4 +72,8 @@

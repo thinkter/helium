@@ -1,6 +1,6 @@
 --- a/chrome/browser/ui/views/toolbar/toolbar_button.cc
 +++ b/chrome/browser/ui/views/toolbar/toolbar_button.cc
-@@ -160,7 +160,7 @@ void ToolbarButton::ClearHighlight() {
+@@ -166,7 +166,7 @@ void ToolbarButton::ClearHighlight() {
  
  int ToolbarButton::GetRoundedCornerRadius() const {
    return ChromeLayoutProvider::Get()->GetCornerRadiusMetric(
@@ -33,7 +33,7 @@
          SkRRect::MakeRectXY(gfx::RectToSkRect(rect), radii, radii));
 --- a/chrome/browser/ui/views/toolbar/split_tabs_button.cc
 +++ b/chrome/browser/ui/views/toolbar/split_tabs_button.cc
-@@ -162,7 +162,7 @@ void SplitTabsToolbarButton::UpdateButto
+@@ -201,7 +201,7 @@ void SplitTabsToolbarButton::UpdateButto
    const bool is_active_tab_in_split = IsActiveTabInSplit();
    UpdateButtonIcon();
    UpdateStatusIndicator(is_active_tab_in_split);
@@ -41,15 +41,4 @@
 +  SetVisible(pin_state_.GetValue());
    UpdateAccessibilityRole(is_active_tab_in_split);
    UpdateAccessibilityLabel(is_active_tab_in_split);
- }
---- a/chrome/browser/ui/views/toolbar/toolbar_divider.cc
-+++ b/chrome/browser/ui/views/toolbar/toolbar_divider.cc
-@@ -15,7 +15,7 @@ ToolbarDivider::ToolbarDivider() {
-       gfx::Size(GetLayoutConstant(LayoutConstant::kToolbarDividerWidth),
-                 GetLayoutConstant(LayoutConstant::kToolbarDividerHeight)));
-   SetBackground(views::CreateRoundedRectBackground(
--      kColorToolbarExtensionSeparatorEnabled,
-+      kColorTabDividerFrameActive,
-       GetLayoutConstant(LayoutConstant::kToolbarDividerCornerRadius)));
- }
- 
+   MaybeAbortIndirectAccessIPH();

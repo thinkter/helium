@@ -190,21 +190,6 @@
     "message": "Нұсқа <ph name=\"HELIUM_PRODUCT_VERSION\">$1<ex>0.0.0.0</ex></ph> (<ph name=\"PRODUCT_CHANNEL\">$4<ex>Developer Build</ex></ph>, <ph name=\"CHROMIUM_NAME\">$7</ph> <ph name=\"PRODUCT_VERSION\">$2<ex>15.0.865.0</ex></ph><ph name=\"PRODUCT_VERSION_SUFFIX\">$3<ex>-r123456</ex></ph>) <ph name=\"PRODUCT_MODIFIER\">$5</ph> <ph name=\"PRODUCT_VERSION_BITS\">$6</ph>"
   },
   {
-    "name": "IDS_SETTINGS_HELIUM_SERVICES_UPDATE",
-    "source": "Allow automatic browser and component updates",
-    "message": "Браузер мен компоненттерді автоматты жаңартуға рұқсат беру"
-  },
-  {
-    "name": "IDS_SETTINGS_HELIUM_SERVICES_UPDATE_DESCRIPTION",
-    "source": "Helium will automatically download and install browser and component updates as they become available. We recommend keeping this setting enabled to ensure you get the latest features and security updates.",
-    "message": "Helium браузер мен компонент жаңартуларын қол жетімді болған кезде автоматты түрде жүктеп орнатады. Ең соңғы мүмкіндіктер мен қауіпсіздік жаңартуларын алу үшін бұл параметрді қосулы ұстауды ұсынамыз."
-  },
-  {
-    "name": "IDS_SETTINGS_HELIUM_SERVICES_UPDATE_DESCRIPTION",
-    "source": "Helium will automatically download and install browser and component updates as they become available. We recommend keeping this setting enabled to ensure you get the latest features and security updates. Automatic core browser updates are not available on this platform yet, but component updates are. Please use external software to keep Helium up to date.",
-    "message": "Helium браузер мен компонент жаңартуларын қол жетімді болған кезде автоматты түрде жүктеп орнатады. Ең соңғы мүмкіндіктер мен қауіпсіздік жаңартуларын алу үшін бұл параметрді қосулы ұстауды ұсынамыз. Бұл платформада негізгі браузердің автоматты жаңартулары әзірге қол жетімді емес, бірақ компонент жаңартулары қол жетімді. Helium жаңартып отыру үшін сыртқы бағдарламалық жасақтаманы пайдаланыңыз."
-  },
-  {
     "name": "IDS_SETTINGS_HELIUM_SERVICES_UBO",
     "source": "Allow downloading filter lists for uBlock Origin",
     "message": "uBlock Origin үшін сүзгі тізімдерін жүктеуге рұқсат беру"
@@ -238,16 +223,6 @@
     "name": "IDS_SETTINGS_PERMISSIONS_DESCRIPTION_NORMAL",
     "source": "Manage site permissions and content settings (cookies, pop-ups, and more)",
     "message": "Сайт рұқсаттары мен мазмұн параметрлерін басқару (cookie файлдары, қалқымалы терезелер және т.б.)"
-  },
-  {
-    "name": "IDS_SETTINGS_SECURITY_DESCRIPTION_NORMAL",
-    "source": "Connection security, DNS settings, certificate management, and other security settings",
-    "message": "Қосылым қауіпсіздігі, DNS параметрлері, сертификаттарды басқару және басқа қауіпсіздік параметрлері"
-  },
-  {
-    "name": "IDS_SETTINGS_ENABLE_DO_NOT_TRACK_DIALOG_TEXT_HELIUM",
-    "source": "Enabling \"Do Not Track\" means that Helium will include a request not to be tracked with your browsing traffic. Whether this request is honored depends on whether a website responds to it and on how it is interpreted. For example, some websites may respond by showing you ads that aren't personalized using your previous browsing data. Many websites may still track you regardless of the request.",
-    "message": "«Do Not Track» мүмкіндігін қосу Helium шолу трафигіңізбен бірге бақыламау сұрауын жіберетінін білдіреді. Бұл сұраудың орындалуы веб-сайттың оған жауап беруіне және оның қалай түсіндірілетініне байланысты. Мысалы, кейбір веб-сайттар алдыңғы шолу деректерін пайдаланбай жарнамалар көрсету арқылы жауап бере алады. Көптеген веб-сайттар сұрауға қарамастан сізді бақылауды жалғастыруы мүмкін."
   },
   {
     "name": "IDS_SETTINGS_ALLOWED_THIRD_PARTY_COOKIES_DESCRIPTION_HELIUM",
@@ -395,28 +370,853 @@
     "message": "Тік орналасуда тік қойындылардың күйін ауыстыру үшін Ctrl+S пайдалану"
   },
   {
-    "name": "IDS_SETTINGS_CENTERED_LOCATION_BAR",
-    "source": "Center the address bar",
-    "message": "Мекенжай жолағын ортаға орналастыру"
-  },
-  {
-    "name": "IDS_SETTINGS_MINIMAL_LOCATION_BAR",
-    "source": "Minimal address bar",
-    "message": "Минималды мекенжай жолағы"
-  },
-  {
-    "name": "IDS_SETTINGS_BROWSER_ZEN_MODE",
-    "source": "Zen mode (experimental)",
-    "message": "Zen режимі (эксперименттік)"
-  },
-  {
-    "name": "IDS_SETTINGS_BROWSER_ZEN_MODE_DESCRIPTION",
-    "source": "Hide toolbar and tab strip until hovering near their edges",
-    "message": "Құралдар тақтасы мен қойындылар жолағын олардың шеттеріне меңзер апарғанша жасыру"
-  },
-  {
     "name": "IDS_SETTINGS_DEFAULT_BROWSER_SECONDARY",
     "source": "Helium cannot be set as default, because no <ph name=\"DESKTOP_FILENAME\">$1<ex>helium.desktop</ex></ph> file was found in any of: ~/.local/share/applications, /usr/share/applications, /usr/local/share/applications.",
     "message": "Helium әдепкі браузер ретінде орнатылмайды, себебі келесі жолдардың ешқайсысында <ph name=\"DESKTOP_FILENAME\">$1<ex>helium.desktop</ex></ph> файлы табылмады: ~/.local/share/applications, /usr/share/applications, /usr/local/share/applications."
+  },
+  {
+    "name": "IDS_SETTINGS_CHOOSE_CUSTOM_AVATAR_FILE",
+    "source": "Choose file",
+    "message": "Файлды таңдау"
+  },
+  {
+    "name": "IDS_SETTINGS_CLEAR_CUSTOM_AVATAR_DIALOG_TITLE",
+    "source": "Clear custom avatar?",
+    "message": "Таңдаулы аватар тазартылсын ба?"
+  },
+  {
+    "name": "IDS_SETTINGS_CUSTOM_AVATAR_FILE_TOO_LARGE",
+    "source": "Selected file is too large. Please select a file smaller than 30MB.",
+    "message": "Таңдалған файл тым үлкен. 30MB-тан кіші файлды таңдаңыз."
+  },
+  {
+    "name": "IDS_SETTINGS_CUSTOM_AVATAR_ERROR",
+    "source": "Image could not be loaded",
+    "message": "Суретті жүктеу мүмкін болмады"
+  },
+  {
+    "name": "IDS_SETTINGS_CUSTOM_AVATAR_LABEL",
+    "source": "Custom avatar",
+    "message": "Таңдаулы аватар"
+  },
+  {
+    "name": "IDS_SETTINGS_ROUNDED_FRAME",
+    "source": "Show a rounded frame around web contents",
+    "message": "Веб-мазмұн айналасында дөңгелектелген жиекті көрсету"
+  },
+  {
+    "name": "IDS_SETTINGS_ZEN_PIN_SIDEBAR",
+    "source": "Always show the sidebar",
+    "message": "Бүйірлік панельді әрқашан көрсету"
+  },
+  {
+    "name": "IDS_SETTINGS_ZEN_PIN_TOP_TOOLBAR",
+    "source": "Always show the top bar",
+    "message": "Жоғарғы жолақты әрқашан көрсету"
+  },
+  {
+    "name": "IDS_TAB_CXMENU_CLOSETABSABOVE",
+    "source": "Close tabs above",
+    "message": "Жоғарыдағы қойындыларды жабу"
+  },
+  {
+    "name": "IDS_TAB_CXMENU_CLOSETABSABOVE",
+    "source": "Close Tabs Above",
+    "message": "Жоғарыдағы қойындыларды жабу"
+  },
+  {
+    "name": "IDS_IMPORT_FULL_DISK_ACCESS_DIALOG_TITLE",
+    "source": "Full Disk Access required",
+    "message": "Дискіге толық қатынас қажет"
+  },
+  {
+    "name": "IDS_IMPORT_FULL_DISK_ACCESS_DIALOG_MESSAGE",
+    "source": "Helium needs Full Disk Access to import your Bookmarks from Safari.",
+    "message": "Safari-ден бетбелгілеріңізді импорттау үшін Helium қолданбасына дискіге толық қатынас қажет."
+  },
+  {
+    "name": "IDS_IMPORT_FULL_DISK_ACCESS_DIALOG_LINK",
+    "source": "Learn how to grant Full Disk Access from your System Preferences.",
+    "message": "Жүйе параметрлерінде дискіге толық қатынас беруді үйреніңіз."
+  },
+  {
+    "name": "IDS_IMPORT_FULL_DISK_ACCESS_DIALOG_OPEN_SETTINGS",
+    "source": "Open System Preferences",
+    "message": "Жүйе параметрлерін ашу"
+  },
+  {
+    "name": "IDS_SETTINGS_HELIUM_SERVICES_OVERRIDE_INVALID_ORIGIN",
+    "source": "Invalid origin",
+    "message": "Жарамсыз бастапқы URL"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_SELECT_NEXT_TAB",
+    "source": "Next tab",
+    "message": "Келесі қойынды"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_SELECT_PREVIOUS_TAB",
+    "source": "Previous tab",
+    "message": "Алдыңғы қойынды"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_FOCUS_LOCATION",
+    "source": "Focus address bar",
+    "message": "Мекенжай жолағына фокустау"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_FIND_NEXT",
+    "source": "Find next",
+    "message": "Келесісін табу"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_FIND_PREVIOUS",
+    "source": "Find previous",
+    "message": "Алдыңғысын табу"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_BACK",
+    "source": "Back",
+    "message": "Артқа"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_FORWARD",
+    "source": "Forward",
+    "message": "Алға"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_HOME",
+    "source": "Home",
+    "message": "Басты бет"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_NEW_SPLIT_TAB",
+    "source": "New split tab",
+    "message": "Жаңа бөлінген қойынды"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_SELECT_LAST_TAB",
+    "source": "Last tab",
+    "message": "Соңғы қойынды"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_SELECT_TAB",
+    "source": "Tab <ph name=\"TAB_NUMBER\">$1<ex>1</ex></ph>",
+    "message": "Қойынды <ph name=\"TAB_NUMBER\">$1<ex>1</ex></ph>"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_MOVE_TAB_NEXT",
+    "source": "Move tab right",
+    "message": "Қойындыны оңға жылжыту"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_MOVE_TAB_PREVIOUS",
+    "source": "Move tab left",
+    "message": "Қойындыны солға жылжыту"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_FOCUS_NEXT_TAB_GROUP",
+    "source": "Next tab group",
+    "message": "Келесі қойындылар тобы"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_FOCUS_PREVIOUS_TAB_GROUP",
+    "source": "Previous tab group",
+    "message": "Алдыңғы қойындылар тобы"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_CLOSE_TAB_GROUP",
+    "source": "Close tab group",
+    "message": "Қойындылар тобын жабу"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_FOCUS_BOOKMARKS",
+    "source": "Focus bookmarks bar",
+    "message": "Бетбелгілер жолағына фокустау"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_TOGGLE_VERTICAL_TABS",
+    "source": "Toggle vertical tabs",
+    "message": "Тік қойындыларды қосу/өшіру"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_CLOSE_FIND_OR_STOP",
+    "source": "Close find bar or stop loading",
+    "message": "Іздеу жолағын жабу немесе жүктеуді тоқтату"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_FOCUS_SEARCH",
+    "source": "Focus search",
+    "message": "Іздеуге фокустау"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_FOCUS_NEXT_PANE",
+    "source": "Focus next pane",
+    "message": "Келесі браузер панеліне фокустау"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_FOCUS_PREVIOUS_PANE",
+    "source": "Focus previous pane",
+    "message": "Алдыңғы браузер панеліне фокустау"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_FOCUS_WEB_CONTENTS_PANE",
+    "source": "Focus page content",
+    "message": "Бет мазмұнына фокустау"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_FOCUS_MENU_BAR",
+    "source": "Focus menu bar",
+    "message": "Мәзір жолағына фокустау"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_FOCUS_TOOLBAR",
+    "source": "Focus toolbar",
+    "message": "Құралдар тақтасына фокустау"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_FOCUS_INACTIVE_POPUP",
+    "source": "Focus inactive popup",
+    "message": "Белсенді емес қалқымалы терезеге фокустау"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_SHOW_AVATAR_MENU",
+    "source": "Profile menu",
+    "message": "Профиль мәзірі"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_SHOW_APP_MENU",
+    "source": "App menu",
+    "message": "Қолданба мәзірі"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_TOGGLE_ZEN_MODE_TOP_CHROME_PIN",
+    "source": "Pin top toolbar",
+    "message": "Жоғарғы құралдар тақтасын бекіту"
+  },
+  {
+    "name": "IDS_SHORTCUT_COMMAND_TOGGLE_DEV_TOOLS",
+    "source": "Toggle developer tools",
+    "message": "Әзірлеуші құралдарын қосу/өшіру"
+  },
+  {
+    "name": "IDS_APP_PLUS_KEY",
+    "source": "Plus",
+    "message": "Плюс"
+  },
+  {
+    "name": "IDS_APP_NUMPAD_KEY",
+    "source": "Numpad <ph name=\"KEY_NAME\">$1<ex>1</ex></ph>",
+    "message": "Сандық пернетақта <ph name=\"KEY_NAME\">$1<ex>1</ex></ph>"
+  },
+  {
+    "name": "IDS_SETTINGS_SHORTCUTS_TITLE",
+    "source": "Keyboard shortcuts",
+    "message": "Пернетақта тіркесімдері"
+  },
+  {
+    "name": "IDS_SETTINGS_SHORTCUTS_SEARCH_LABEL",
+    "source": "Search shortcuts",
+    "message": "Тіркесімдерді іздеу"
+  },
+  {
+    "name": "IDS_SETTINGS_SHORTCUTS_REMOVE_A11Y_LABEL",
+    "source": "Remove <ph name=\"SHORTCUT\">$1<ex>Ctrl+T</ex></ph> from <ph name=\"COMMAND\">$2<ex>New tab</ex></ph>",
+    "message": "<ph name=\"SHORTCUT\">$1<ex>Ctrl+T</ex></ph> тіркесімін <ph name=\"COMMAND\">$2<ex>New tab</ex></ph> пәрменінен жою"
+  },
+  {
+    "name": "IDS_SETTINGS_SHORTCUTS_RESET_ALL",
+    "source": "Reset all to defaults",
+    "message": "Барлығын әдепкі мәндерге қайтару"
+  },
+  {
+    "name": "IDS_SETTINGS_SHORTCUTS_ADD_DIALOG_TITLE",
+    "source": "Add shortcut",
+    "message": "Тіркесім қосу"
+  },
+  {
+    "name": "IDS_SETTINGS_SHORTCUTS_RESET_DIALOG_DESCRIPTION",
+    "source": "All keyboard shortcuts will be reset to their default values. Any custom shortcuts you've set will be lost.",
+    "message": "Барлық пернетақта тіркесімдері әдепкі мәндеріне қайтарылады. Орнатқан кез келген теңшелген тіркесімдеріңіз жоғалады."
+  },
+  {
+    "name": "IDS_SETTINGS_SHORTCUTS_PRESS_SHORTCUT",
+    "source": "Press a combination of keys to create a new shortcut",
+    "message": "Жаңа тіркесім жасау үшін пернелер тіркесімін басыңыз"
+  },
+  {
+    "name": "IDS_SETTINGS_SHORTCUTS_NEED_KEY",
+    "source": "Include a key that is not a modifier.",
+    "message": "Модификатор емес пернені қосыңыз."
+  },
+  {
+    "name": "IDS_SETTINGS_SHORTCUTS_WILL_OVERRIDE",
+    "source": "Saving will remove this shortcut from <ph name=\"COMMAND\">$1<ex>New tab</ex></ph>.",
+    "message": "Сақтасаңыз, бұл тіркесім <ph name=\"COMMAND\">$1<ex>New tab</ex></ph> пәрменінен жойылады."
+  },
+  {
+    "name": "IDS_SETTINGS_SHORTCUTS_SYSTEM_CONFLICT",
+    "source": "This shortcut is managed by <ph name=\"COMMAND\">$1<ex>Full screen</ex></ph> and cannot be changed.",
+    "message": "Бұл тіркесімді <ph name=\"COMMAND\">$1<ex>Full screen</ex></ph> басқарады және оны өзгерту мүмкін емес."
+  },
+  {
+    "name": "IDS_SETTINGS_SHORTCUTS_INVALID",
+    "source": "This shortcut cannot be saved.",
+    "message": "Бұл тіркесімді сақтау мүмкін емес."
+  },
+  {
+    "name": "IDS_SETTINGS_SHORTCUTS_MAC_SYSTEM_SETTINGS_NOTICE",
+    "source": "Some keyboard shortcuts are protected and can't be changed here. To change them, go to:",
+    "message": "Кейбір пернетақта тіркесімдері қорғалған және оларды мұнда өзгерту мүмкін емес. Оларды өзгерту үшін мына жерге өтіңіз:"
+  },
+  {
+    "name": "IDS_SETTINGS_SHORTCUTS_MAC_SYSTEM_SETTINGS_LINK",
+    "source": "System Settings &gt; Keyboard &gt; Keyboard Shortcuts &gt; App Shortcuts",
+    "message": "Жүйе параметрлері &gt; Пернетақта &gt; Пернетақта тіркесімдері &gt; Қолданба тіркесімдері"
+  },
+  {
+    "name": "IDS_ZEN_MODE_NEW_TAB_CREATED_TOAST_BODY",
+    "source": "New tab opened",
+    "message": "Жаңа қойынды ашылды"
+  },
+  {
+    "name": "IDS_SETTINGS_HELIUM_SERVICES_UPDATE",
+    "source": "Allow automatic browser updates",
+    "message": "Браузерді автоматты түрде жаңартуға рұқсат беру"
+  },
+  {
+    "name": "IDS_SETTINGS_HELIUM_SERVICES_UPDATE_DESCRIPTION",
+    "source": "Helium will automatically check for updates and install them. This includes browser and component updates. We recommend keeping this setting enabled to ensure you get the latest features and security updates.",
+    "message": "Helium жаңартуларды автоматты түрде тексеріп, орнатады. Бұған браузер мен компонент жаңартулары кіреді. Ең жаңа мүмкіндіктер мен қауіпсіздік жаңартуларын алып тұруыңыз үшін бұл параметрді қосулы қалдыруды ұсынамыз."
+  },
+  {
+    "name": "IDS_SETTINGS_HELIUM_SERVICES_UPDATE",
+    "source": "Allow automatic component updates",
+    "message": "Компоненттерді автоматты түрде жаңартуға рұқсат беру"
+  },
+  {
+    "name": "IDS_SETTINGS_HELIUM_SERVICES_UPDATE_DESCRIPTION",
+    "source": "Helium will automatically check for component updates and install them. We recommend keeping this setting enabled. On Linux, browser updates are handled by your distro's package manager. Please check for Helium package updates at least every week.",
+    "message": "Helium компонент жаңартуларын автоматты түрде тексеріп, орнатады. Бұл параметрді қосулы қалдыруды ұсынамыз. Linux жүйесінде браузер жаңартуларын дистрибутивіңіздің пакет менеджері өңдейді. Helium пакетінің жаңартуларын кемінде апта сайын тексеріңіз."
+  },
+  {
+    "name": "IDS_TAB_CXMENU_HIBERNATE_OTHER_TABS",
+    "source": "Hibernate other tabs",
+    "message": "Басқа қойындыларды ұйықтату"
+  },
+  {
+    "name": "IDS_TAB_CXMENU_HIBERNATE_OTHER_TABS",
+    "source": "Hibernate Other Tabs",
+    "message": "Басқа қойындыларды ұйықтату"
+  },
+  {
+    "name": "IDS_TAB_CXMENU_COPY_URL",
+    "source": "Copy URL",
+    "message": "URL мекенжайын көшіру"
+  },
+  {
+    "name": "IDS_TAB_CXMENU_COPY_URLS",
+    "source": "Copy URLs",
+    "message": "URL мекенжайларын көшіру"
+  },
+  {
+    "name": "IDS_SETTINGS_ACCESSIBILITY_TOAST_TOGGLE_TITLE",
+    "source": "Background action confirmation toasts",
+    "message": "Фондық әрекеттерді растау хабарландырулары"
+  },
+  {
+    "name": "IDS_SETTINGS_ACCESSIBILITY_TOAST_TOGGLE_DESCRIPTION",
+    "source": "Shows a toast notification when you copy content, such as links and images, or open a new background tab in Frameless mode",
+    "message": "Сілтемелер мен суреттер сияқты мазмұнды көшіргенде немесе жиексіз режимде жаңа фондық қойынды ашқанда қысқа хабарландыру көрсетеді"
+  },
+  {
+    "name": "IDS_SETTINGS_BROWSER_ZEN_MODE",
+    "source": "Frameless mode",
+    "message": "Жиексіз режим"
+  },
+  {
+    "name": "IDS_SETTINGS_BROWSER_ZEN_MODE_DESCRIPTION",
+    "source": "Automatically hide browser UI until you hover the window edge",
+    "message": "Тінтуірді терезе жиегіне апарғанға дейін браузер интерфейсін автоматты түрде жасыру"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_BUTTON_NEXT",
+    "source": "Next",
+    "message": "Келесі"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_DEFAULT_BROWSER_YES",
+    "source": "Yes",
+    "message": "Иә"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_DATA_IMPORT_HISTORY",
+    "source": "History",
+    "message": "Тарих"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_PASSWORD_INSTALLED",
+    "source": "Installed",
+    "message": "Орнатылды"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_PASSWORD_INSTALL",
+    "source": "Install",
+    "message": "Орнату"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_BUTTON_BACK",
+    "source": "Back",
+    "message": "Артқа"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_DEFAULT_BROWSER_NO",
+    "source": "No",
+    "message": "Жоқ"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_PASSWORD_PRIVACY",
+    "source": "Privacy",
+    "message": "Құпиялық"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_DATA_IMPORT_EXTENSIONS",
+    "source": "Extensions",
+    "message": "Кеңейтімдер"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_BUTTON_CONFIGURE",
+    "source": "Configure",
+    "message": "Конфигурациялау"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_PASSWORD_IMPORT_GUIDE",
+    "source": "Import",
+    "message": "Импорттау"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_DATA_IMPORT_BOOKMARKS",
+    "source": "Bookmarks",
+    "message": "Бетбелгілер"
+  },
+  {
+    "name": "IDS_CONTENT_CONTEXT_SEARCHWEBWITH",
+    "source": "&amp;Search with <ph name=\"SEARCH_ENGINE\">$1<ex>DuckDuckGo</ex></ph>",
+    "message": "<ph name=\"SEARCH_ENGINE\">$1<ex>DuckDuckGo</ex></ph> арқылы &amp;іздеу"
+  },
+  {
+    "name": "IDS_FORCE_PASTE",
+    "source": "Force paste",
+    "message": "Мәжбүрлеп қою"
+  },
+  {
+    "name": "IDS_FORCE_PASTE",
+    "source": "Force Paste",
+    "message": "Мәжбүрлеп қою"
+  },
+  {
+    "name": "IDS_SETTINGS_SHIFT_RIGHT_CLICK_CONTEXT_MENU",
+    "source": "Force context menu with Shift+Right Click",
+    "message": "Shift+оң жақ шерту арқылы контекстік мәзірді мәжбүрлеп ашу"
+  },
+  {
+    "name": "IDS_SETTINGS_HELIUM_CRASH_REPORTING_TITLE",
+    "source": "Crash reporting",
+    "message": "Ақаулық туралы есеп беру"
+  },
+  {
+    "name": "IDS_SETTINGS_HELIUM_CRASH_REPORTING_DESCRIPTION",
+    "source": "Choose whether Helium can ask to send crash reports or send them automatically. Disabling reports will delete all pending reports.",
+    "message": "Helium ақаулық туралы есептерді жіберуді сұрай ала ма немесе оларды автоматты түрде жібере ме, соны таңдаңыз. Есептерді өшіру барлық күтудегі есептерді жояды."
+  },
+  {
+    "name": "IDS_SETTINGS_HELIUM_CRASH_REPORTING_DISABLED",
+    "source": "Disabled",
+    "message": "Өшірілген"
+  },
+  {
+    "name": "IDS_SETTINGS_HELIUM_CRASH_REPORTING_ASK",
+    "source": "Ask after a crash",
+    "message": "Ақаулықтан кейін сұрау"
+  },
+  {
+    "name": "IDS_SETTINGS_HELIUM_CRASH_REPORTING_AUTOMATIC",
+    "source": "Send automatically",
+    "message": "Автоматты түрде жіберу"
+  },
+  {
+    "name": "IDS_HELIUM_CRASH_REPORTING_DIALOG_TITLE",
+    "source": "{COUNT, plural, =1 {Would you like to send a crash report?} other {Would you like to send # crash reports?}}",
+    "message": "{COUNT, plural, =1 {Ақаулық туралы есеп жібергіңіз келе ме?} other {# ақаулық туралы есеп жібергіңіз келе ме?}}"
+  },
+  {
+    "name": "IDS_HELIUM_CRASH_REPORTING_DIALOG_DESCRIPTION",
+    "source": "Helium closed unexpectedly. A crash report could help us fix the issue you ran into and prevent it from happening again.",
+    "message": "Helium күтпеген жерден жабылды. Ақаулық туралы есеп сіз тап болған мәселені түзетуге және оның қайта туындауын болдырмауға көмектесе алады."
+  },
+  {
+    "name": "IDS_HELIUM_CRASH_REPORTING_DIALOG_PRIVACY",
+    "source": "A crash report may incidentally include some sensitive data present in Helium's memory at the time of crash.",
+    "message": "Ақаулық туралы есепке ақаулық кезінде Helium жадында болған кейбір құпия деректер кездейсоқ енуі мүмкін."
+  },
+  {
+    "name": "IDS_HELIUM_CRASH_REPORTING_DIALOG_OPTIONAL",
+    "source": "Nothing has been sent yet. Sending a crash report is optional.",
+    "message": "Әзірге ештеңе жіберілген жоқ. Ақаулық туралы есеп жіберу міндетті емес."
+  },
+  {
+    "name": "IDS_HELIUM_CRASH_REPORTING_DIALOG_SEND_REPORT",
+    "source": "{COUNT, plural, =1 {Send Report} other {Send # Reports}}",
+    "message": "{COUNT, plural, =1 {Есеп жіберу} other {# есеп жіберу}}"
+  },
+  {
+    "name": "IDS_HELIUM_CRASH_REPORTING_DIALOG_SEND_REPORT",
+    "source": "{COUNT, plural, =1 {Send report} other {Send # reports}}",
+    "message": "{COUNT, plural, =1 {Есеп жіберу} other {# есеп жіберу}}"
+  },
+  {
+    "name": "IDS_CRASH_DISABLED_MESSAGE",
+    "source": "Crash reporting is disabled in Helium settings or by policy.",
+    "message": "Ақаулық туралы есеп беру Helium параметрлерінде немесе саясат бойынша өшірілген."
+  },
+  {
+    "name": "IDS_CRASH_BUG_LINK_LABEL",
+    "source": "Create an issue with details",
+    "message": "Мәліметтермен мәселе жасау"
+  },
+  {
+    "name": "IDS_SETTINGS_NATIVE_FRAME_MATERIALS",
+    "source": "Use native frame materials (experimental)",
+    "message": "Жүйелік жақтау материалдарын пайдалану (эксперименттік)"
+  },
+  {
+    "name": "IDS_SETTINGS_NATIVE_FRAME_MATERIALS_DESCRIPTION",
+    "source": "Applies native materials to the browser frame surfaces. May cause UI clarity issues.",
+    "message": "Браузер жақтауының беттеріне жүйелік материалдарды қолданады. Интерфейстің анықтығына қатысты мәселелер туындауы мүмкін."
+  },
+  {
+    "name": "IDS_SETTINGS_SHOW_ZOOM_INDICATOR",
+    "source": "Show the zoom indicator in the address bar",
+    "message": "Мекенжай жолағында масштаб индикаторын көрсету"
+  },
+  {
+    "name": "IDS_CONTENT_CONTEXT_SYSTEM_TRANSLATE",
+    "source": "Translate “<ph name=\"SELECTION_TEXT\">$1<ex>Bonjour</ex></ph>”",
+    "message": "«<ph name=\"SELECTION_TEXT\">$1<ex>Bonjour</ex></ph>» аудару"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_PAGE_TITLE",
+    "source": "Helium Setup",
+    "message": "Helium орнату"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_BUTTON_USE_DEFAULTS",
+    "source": "Use defaults",
+    "message": "Әдепкі мәндерді пайдалану"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_BUTTON_LETS_GO",
+    "source": "Let's go!",
+    "message": "Бастайық!"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_PARTNER_TITLE",
+    "source": "Helium Partner",
+    "message": "Helium серіктесі"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_PARTNER_TOOLTIP",
+    "source": "Paying for this service will support the development of Helium.",
+    "message": "Бұл қызметке ақы төлеу Helium дамуын қолдайды."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_WELCOME_GREETING",
+    "source": "Meet Helium",
+    "message": "Helium-мен танысыңыз"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_FINISH_TITLE",
+    "source": "Ready to browse?",
+    "message": "Шолуға дайынсыз ба?"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_TITLE",
+    "source": "Helium services",
+    "message": "Helium қызметтері"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_SUBTITLE",
+    "source": "Services are not active until you consent to using them. Changes will be applied after you go to the next page.",
+    "message": "Қызметтер оларды пайдалануға келіскенше белсенді болмайды. Өзгерістер келесі бетке өткеннен кейін қолданылады."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_CONNECTION_TITLE",
+    "source": "Allow connecting to Helium services",
+    "message": "Helium қызметтеріне қосылуға рұқсат ету"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_CONNECTION_DESC",
+    "source": "Helium services provide additional functionality, such as: extension downloads, native !bangs, filter list updates, and browser updates. When disabled, none of these features will work, but Helium will not make any web requests.",
+    "message": "Helium қызметтері қосымша функцияларды қамтамасыз етеді, мысалы: кеңейтімдерді жүктеп алу, кірістірілген !bang-тар, сүзгі тізімін жаңарту және браузер жаңартулары. Өшірілгенде бұл мүмкіндіктердің ешқайсысы жұмыс істемейді, бірақ Helium ешқандай веб-сұрау жасамайды."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_BANGS_TITLE",
+    "source": "Allow downloading the !bangs list",
+    "message": "!bangs тізімін жүктеп алуға рұқсат ету"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_BANGS_DESC",
+    "source": "Helium will fetch a list of bangs that help you browse the Internet faster, such as !w or !gh. When disabled, bangs will not work.",
+    "message": "Helium интернетті жылдамырақ шолуға көмектесетін bang-тар тізімін алады, мысалы !w немесе !gh. Өшірілгенде bang-тар жұмыс істемейді."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_EXTENSIONS_TITLE",
+    "source": "Proxy extension downloads and updates",
+    "message": "Кеңейтімдерді жүктеп алу мен жаңартуларды проксилеу"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_EXTENSIONS_DESC",
+    "source": "When enabled, Helium will proxy extension downloads and updates to protect your privacy. When disabled, downloading and updating extensions will not work.",
+    "message": "Қосылғанда Helium құпиялығыңызды қорғау үшін кеңейтімдерді жүктеп алу мен жаңартуларды проксилейді. Өшірілгенде кеңейтімдерді жүктеп алу және жаңарту жұмыс істемейді."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_UBLOCK_TITLE",
+    "source": "Allow downloading filter lists for uBlock Origin",
+    "message": "uBlock Origin үшін сүзгі тізімдерін жүктеп алуға рұқсат ету"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_UBLOCK_DESC",
+    "source": "Helium will fetch fresh filter lists for uBlock Origin. All requests to lists are proxied to protect your privacy. When disabled, default filter lists will be loaded from local storage, which are only updated along with Helium. Optional filter lists will be requested without proxying.",
+    "message": "Helium uBlock Origin үшін жаңа сүзгі тізімдерін алады. Тізімдерге барлық сұраулар құпиялығыңызды қорғау үшін проксиленеді. Өшірілгенде әдепкі сүзгі тізімдері жергілікті жадтан жүктеледі, олар тек Helium-мен бірге жаңартылады. Қосымша сүзгі тізімдері проксисіз сұралады."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_AUTOUPDATES_TITLE",
+    "source": "Allow automatic browser updates",
+    "message": "Автоматты браузер жаңартуларына рұқсат ету"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_AUTOUPDATES_DESC",
+    "source": "Helium will automatically check for updates and install them. This includes browser and component updates. We recommend keeping this setting enabled to ensure you get the latest features and security updates.",
+    "message": "Helium жаңартуларды автоматты түрде тексеріп, оларды орнатады. Бұған браузер мен компонент жаңартулары кіреді. Соңғы мүмкіндіктер мен қауіпсіздік жаңартуларын алу үшін бұл параметрді қосулы қалдыруды ұсынамыз."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_AUTOUPDATES_TITLE_LINUX",
+    "source": "Allow automatic component updates",
+    "message": "Автоматты компонент жаңартуларына рұқсат ету"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_AUTOUPDATES_DESC_LINUX",
+    "source": "Helium will automatically check for component updates and install them. We recommend keeping this setting enabled. On Linux, browser updates are handled by your distro's package manager. Please check for Helium package updates at least every week.",
+    "message": "Helium компонент жаңартуларын автоматты түрде тексеріп, оларды орнатады. Бұл параметрді қосулы қалдыруды ұсынамыз. Linux жүйесінде браузер жаңартуларын дистрибутивіңіздің бума менеджері өңдейді. Helium бумасының жаңартуларын кемінде апта сайын тексеріп тұрыңыз."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_SPELLCHECK_TITLE",
+    "source": "Allow downloading dictionary files for spell checking",
+    "message": "Емлені тексеру үшін сөздік файлдарын жүктеп алуға рұқсат ету"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_SPELLCHECK_DESC",
+    "source": "Helium will fetch dictionary files used for spell checking when requested. When disabled, spell checking will not work.",
+    "message": "Helium сұралғанда емлені тексеру үшін пайдаланылатын сөздік файлдарын алады. Өшірілгенде емлені тексеру жұмыс істемейді."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_INSTANCE_TITLE",
+    "source": "Use your own instance of Helium services",
+    "message": "Helium қызметтерінің өз данасын пайдалану"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SERVICES_INSTANCE_DESC",
+    "source": "You can host your own instance of Helium services and use it in your browser instead of the pre-hosted server. If you have one, you can set it in Helium settings.",
+    "message": "Helium қызметтерінің өз данасын орналастырып, оны браузеріңізде алдын ала орналастырылған сервердің орнына пайдалана аласыз. Егер сізде бар болса, оны Helium параметрлерінде орната аласыз."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SEARCH_CATEGORIES_PRIVATE",
+    "source": "A privacy-first search engine which doesn't profile or track you.",
+    "message": "Сізді профильдемейтін немесе қадағаламайтын құпиялықты бірінші орынға қоятын іздеу механизмі."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SEARCH_CATEGORIES_SMALL",
+    "source": "Transparent, but not privacy-focused. Offers better privacy than mainstream search engines.",
+    "message": "Ашық, бірақ құпиялыққа бағытталмаған. Негізгі іздеу механизмдеріне қарағанда жақсырақ құпиялық ұсынады."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SEARCH_CATEGORIES_MAINSTREAM",
+    "source": "A mainstream search engine which collects extensive personal data.",
+    "message": "Ауқымды жеке деректерді жинайтын негізгі іздеу механизмі."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SEARCH_CATEGORIES_CUSTOM",
+    "source": "A custom search engine. Its privacy wasn't verified by Helium.",
+    "message": "Реттелетін іздеу механизмі. Оның құпиялығын Helium тексермеген."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SEARCH_ENGINES_BING",
+    "source": "Collects extensive personal data. Privacy controls are buried and limited. Subjectively overwhelming UI.",
+    "message": "Ауқымды жеке деректерді жинайды. Құпиялық басқару элементтері жасырын әрі шектеулі. Субъективті түрде шамадан тыс интерфейс."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SEARCH_ENGINES_GOOGLE",
+    "source": "It's Google. It dominates the search market, collects extensive personal data, and profiles you.",
+    "message": "Бұл — Google. Ол іздеу нарығында үстемдік етеді, ауқымды жеке деректерді жинайды және сізді профильдейді."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_DEFAULT_BROWSER_TITLE",
+    "source": "Ready to switch to Helium?",
+    "message": "Helium-ге ауысуға дайынсыз ба?"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_DEFAULT_BROWSER_YES_DESC",
+    "source": "Make Helium my default browser.",
+    "message": "Helium-ді әдепкі браузерім ету."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_DEFAULT_BROWSER_NO_DESC",
+    "source": "Just trying Helium for now.",
+    "message": "Әзірге Helium-ді жай ғана сынап көру."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_DATA_IMPORT_TITLE",
+    "source": "Take your stuff with you",
+    "message": "Заттарыңызды өзіңізбен алып жүріңіз"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_DATA_IMPORT_SUBTITLE",
+    "source": "Transfer your most important bookmarks, history, and extensions from other browsers.",
+    "message": "Ең маңызды бетбелгілеріңізді, тарихыңызды және кеңейтімдеріңізді басқа браузерлерден тасымалдаңыз."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_PASSWORD_TITLE",
+    "source": "Password manager",
+    "message": "Құпия сөз менеджері"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_PASSWORD_SETUP_GUIDE",
+    "source": "Setup",
+    "message": "Баптау"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_PASSWORD_ERROR",
+    "source": "Error:",
+    "message": "Қате:"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_PASSWORD_MANAGERS_DASHLANE",
+    "source": "Popular, paid, and closed-source password manager. Stores data in Europe. Known for aggressive upselling tactics.",
+    "message": "Танымал, ақылы және жабық бастапқы кодты құпия сөз менеджері. Деректерді Еуропада сақтайды. Агрессивті сату тактикасымен танымал."
+  },
+  {
+    "name": "IDS_SETTINGS_NOISE",
+    "source": "Fingerprinting protection",
+    "message": "Саусақ ізінен қорғау"
+  },
+  {
+    "name": "IDS_SETTINGS_NOISE_LINK_DESCRIPTION",
+    "source": "Manage how Helium protects you against fingerprinting",
+    "message": "Helium сізді саусақ ізін алудан қалай қорғайтынын басқарыңыз"
+  },
+  {
+    "name": "IDS_SETTINGS_NOISE_TOGGLE_DESCRIPTION",
+    "source": "Make it harder for sites to fingerprint your browser and device",
+    "message": "Сайттарға браузеріңіз бен құрылғыңыздың саусақ ізін алуды қиындатыңыз"
+  },
+  {
+    "name": "IDS_SETTINGS_NOISE_DESCRIPTION",
+    "source": "When fingerprinting protection is enabled, Helium adds noise to certain browser features to make it harder for sites to track and profile you. Each site sees consistent randomized information during your browsing session to reduce the chances of detection.",
+    "message": "Саусақ ізінен қорғау қосулы кезде Helium сайттарға сізді бақылау мен профильдеуді қиындату үшін кейбір браузер функцияларына шу қосады. Анықталу мүмкіндігін азайту үшін әр сайт шолу сеансы барысында біркелкі кездейсоқтандырылған ақпаратты көреді."
+  },
+  {
+    "name": "IDS_SETTINGS_NOISE_DISCLAIMER",
+    "source": "Fingerprinting cannot be fully prevented, but Helium's analysis defenses make it harder to recover the original fingerprint.",
+    "message": "Саусақ ізін алуды толығымен болдырмау мүмкін емес, бірақ Helium-нің талдауға қарсы қорғанысы бастапқы саусақ ізін қалпына келтіруді қиындатады."
+  },
+  {
+    "name": "IDS_SETTINGS_NOISE_CUSTOM_DESCRIPTION",
+    "source": "When the general fingerprinting protection feature is enabled, sites listed below follow a custom setting. Inserting \"[*.]\" before a domain name applies it to the entire domain.",
+    "message": "Саусақ ізінен қорғаудың жалпы функциясы қосулы кезде төменде тізімделген сайттар арнайы параметрді ұстанады. Домен атауының алдына «[*.]» енгізу оны бүкіл доменге қолданады."
+  },
+  {
+    "name": "IDS_SETTINGS_NOISE_EXCEPTIONS_TITLE",
+    "source": "Sites without fingerprinting protection",
+    "message": "Саусақ ізінен қорғауы жоқ сайттар"
+  },
+  {
+    "name": "IDS_SETTINGS_NOISE_ALLOW_OVERRIDES_TITLE",
+    "source": "Overrides to allow fingerprinting protection",
+    "message": "Саусақ ізінен қорғауға рұқсат ететін ерекше ережелер"
+  },
+  {
+    "name": "IDS_PAGE_INFO_HELIUM_NOISE_HEADER",
+    "source": "Fingerprinting protection",
+    "message": "Саусақ ізінен қорғау"
+  },
+  {
+    "name": "IDS_PAGE_INFO_HELIUM_NOISE_TOOLTIP",
+    "source": "Manage fingerprinting protection for this site",
+    "message": "Осы сайт үшін саусақ ізінен қорғауды басқару"
+  },
+  {
+    "name": "IDS_PAGE_INFO_HELIUM_NOISE_DESCRIPTION",
+    "source": "When fingerprinting protection is enabled, Helium adds noise to certain browser features to make it harder for sites to track and profile you.",
+    "message": "Саусақ ізінен қорғау қосулы кезде Helium сайттарға сізді бақылау мен профильдеуді қиындату үшін кейбір браузер функцияларына шу қосады."
+  },
+  {
+    "name": "IDS_PAGE_INFO_HELIUM_NOISE_BREAKAGE",
+    "source": "Turning off the protection will reduce your privacy, but may fix site features that require fingerprinting.",
+    "message": "Қорғанысты өшіру құпиялығыңызды төмендетеді, бірақ саусақ ізін қажет ететін сайт функцияларының жұмысын түзетуі мүмкін."
+  },
+  {
+    "name": "IDS_PAGE_INFO_HELIUM_NOISE_GLOBALLY_DISABLED",
+    "source": "Fingerprinting protection is turned off in Helium settings.",
+    "message": "Саусақ ізінен қорғау Helium параметрлерінде өшірілген."
+  },
+  {
+    "name": "IDS_PAGE_INFO_HELIUM_NOISE_SETTINGS_BUTTON",
+    "source": "Manage fingerprinting protection",
+    "message": "Саусақ ізінен қорғауды басқару"
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_WELCOME_TERMS",
+    "source": "By continuing, you agree to the <ph name=\"BEGIN_LINK_PRIVACY\">$1</ph>privacy policy<ph name=\"END_LINK_PRIVACY\">$2</ph> and <ph name=\"BEGIN_LINK_TERMS\">$3</ph>terms of use<ph name=\"END_LINK_TERMS\">$4</ph>.",
+    "message": "Жалғастыру арқылы сіз <ph name=\"BEGIN_LINK_PRIVACY\">$1</ph>құпиялық саясатына<ph name=\"END_LINK_PRIVACY\">$2</ph> және <ph name=\"BEGIN_LINK_TERMS\">$3</ph>пайдалану шарттарына<ph name=\"END_LINK_TERMS\">$4</ph> келісесіз."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SEARCH_ENGINES_DUCKDUCKGO",
+    "source": "Privacy-focused. Relies on Bing for results. Promises not to track or profile you.",
+    "message": "Құпиялыққа бағытталған. Нәтижелер үшін Bing-ке сүйенеді. Сізді бақыламауға және профильдемеуге уәде береді."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SEARCH_ENGINES_KAGI",
+    "source": "Privacy-focused. Doesn't use Google or Bing. Has custom ranking. Requires a paid account. No ads, tracking, or profiling.",
+    "message": "Құпиялыққа бағытталған. Google немесе Bing пайдаланбайды. Өз рейтингтеу жүйесі бар. Ақылы тіркелгі қажет. Жарнама, бақылау және профильдеу жоқ."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SEARCH_ENGINES_QWANT",
+    "source": "Based in Europe. Relies on Bing for results. Sends tracking data to Microsoft.",
+    "message": "Еуропада орналасқан. Нәтижелер үшін Bing-ке сүйенеді. Microsoft-қа бақылау деректерін жібереді."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SEARCH_ENGINES_ECOSIA",
+    "source": "May plant trees for clicking ads. Relies on Google and Bing for results. Sends tracking data to Google and Microsoft.",
+    "message": "Жарнамаларды басқаныңыз үшін ағаш отырғызуы мүмкін. Нәтижелер үшін Google мен Bing-ке сүйенеді. Google мен Microsoft-қа бақылау деректерін жібереді."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SEARCH_ENGINES_STARTPAGE",
+    "source": "Privacy-focused. Relies on Google and Bing for results. Promises not to track or profile you.",
+    "message": "Құпиялыққа бағытталған. Нәтижелер үшін Google мен Bing-ке сүйенеді. Сізді бақыламауға және профильдемеуге уәде береді."
+  },
+  {
+    "name": "IDS_HELIUM_ONBOARDING_SEARCH_ENGINES_BRAVE",
+    "source": "Privacy-focused. Doesn't use Google or Bing. Promises not to track or profile you. May show promotions related to Brave services.",
+    "message": "Құпиялыққа бағытталған. Google немесе Bing пайдаланбайды. Сізді бақыламауға және профильдемеуге уәде береді. Brave қызметтеріне қатысты жарнамаларды көрсетуі мүмкін."
+  },
+  {
+    "name": "IDS_EXTENSION_DEBUGGER_STOP_BUTTON",
+    "source": "Stop",
+    "message": "Тоқтату"
+  },
+  {
+    "name": "IDS_SETTINGS_NETWORK_SECTION_TITLE",
+    "source": "Network",
+    "message": "Желі"
   }
 ]

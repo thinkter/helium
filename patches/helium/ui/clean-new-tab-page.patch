@@ -1,6 +1,6 @@
 --- a/chrome/browser/resources/new_tab_page/app.css
 +++ b/chrome/browser/resources/new_tab_page/app.css
-@@ -156,6 +156,7 @@ cr-most-visited {
+@@ -157,6 +157,7 @@ cr-most-visited {
    align-items: center;
    display: flex;
    flex-direction: column;
@@ -10,9 +10,9 @@
    padding-top: var(--ntp-one-google-bar-height);
 --- a/chrome/browser/resources/new_tab_page/app.html
 +++ b/chrome/browser/resources/new_tab_page/app.html
-@@ -1,178 +1,13 @@
+@@ -1,122 +1,4 @@
 -<!-- #html_wrapper_imports_start
--import {nothing} from '//resources/lit/v3_0/lit.rollup.js';
+-import {SubmitButtonIconType} from '//resources/cr_components/composebox/composebox.js';
 -#html_wrapper_imports_end -->
 -<div id="content"
 -  ?ntp-threads-rail-open="${this.showComposebox_ && this.enableThreadsRail_}">
@@ -44,7 +44,7 @@
 -  <!-- TODO(crbug.com/40743294): Instead of ?hidden="\${!this.logoEnabled_}" it would
 -       be nicer to use Lit's conditional rendering. However, that breaks
 -       StartupBrowserCreatorPickerNoParamsTest.ShowPickerWhenAlreadyLaunched on
--       the msan builder. See crbug.com/1169070. -->
+-       the msan builder. See crbug.com/40743659. -->
 -  <ntp-logo id="logo" ?single-colored="${this.singleColoredLogo_}"
 -      .theme="${this.theme_}" ?hidden="${!this.logoEnabled_}">
 -  </ntp-logo>
@@ -62,37 +62,50 @@
 -        @open-composebox="${this.onOpenComposebox_}"
 -        @open-lens-search="${this.onOpenLensSearch_}"
 -        @open-voice-search="${this.onOpenVoiceSearch_}" ?shown="${this.realboxShown_}"
+-        @context-menu-entrypoint-click="${this.onContextMenuEntrypointClick_}"
 -        ?had-secondary-side="${this.realboxHadSecondarySide}"
 -        @had-secondary-side-changed="${this.onRealboxHadSecondarySideChanged_}"
--        @context-menu-entrypoint-click="${this.onContextMenuEntrypointClick_}"
 -        ?can-show-secondary-side="${this.realboxCanShowSecondarySide}"
 -        ?compose-button-enabled="${this.composeButtonEnabled}"
 -        ?composebox-enabled="${this.composeboxEnabled}"
--        searchbox-layout-mode="${this.realboxLayoutMode_}"
+-        .hasVoiceSearchError="${this.hasVoiceSearchError}"
+-        searchbox-layout-mode="${this.ntpRealboxNextEnabled_ ? 'Compact' : ''}"
+-        .inVoiceSearchMode="${this.showVoiceSearchOverlay_}"
 -        ?ntp-realbox-next-enabled="${this.ntpRealboxNextEnabled_}"
 -        ?cycling-placeholders="${this.searchboxCyclingPlaceholders_}"
 -        context-menu-glif-animation-state="${this.contextMenuGlifAnimationState_}"
--        ?multi-line-enabled="${this.multiLineEnabled_}">
+-        .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled_}"
+-        .contextManagementInComposeboxEnabled="${this.contextManagementInComposeboxEnabled_}"
+-        ?multi-line-enabled="${this.multiLineEnabled_}"
+-        ?inert="${!this.realboxShown_}">
 -    </ntp-searchbox>
+-    <div id="dialogAnchor"></div>
 -    ${this.showComposebox_ ? html`
--      <div id="dialogAnchor"></div>
--      <dialog id="composeboxDialog">
--        <cr-composebox id="composebox"
--            ?ntp-realbox-next-enabled="${this.ntpRealboxNextEnabled_}"
--            ?searchbox-next-enabled="${this.ntpRealboxNextEnabled_}"
--            .submitButtonIconType="${this.ntpRealboxNextEnabled_ ? 'forward' : 'upward'}"
--            ?disable-caret-color-animation="${!this.caretAnimationsEnabled_}"
--            .state="${this.composeboxState_}"
--            @close-composebox="${this.onCloseComposebox_}"
--            @context-menu-entrypoint-click="${this.onContextMenuEntrypointClick_}"
--            @voice-search-action="${this.onComposeVoiceSearchAction_}"
--            searchbox-layout-mode="${this.realboxLayoutMode_}">
--        </cr-composebox>
+-      <div id="composeboxDialog">
+-        <ntp-composebox id="composebox"
+-              searchbox-layout-mode="Compact"
+-              searchbox-next-enabled
+-              ?disable-caret-color-animation="${!this.caretAnimationsEnabled_}"
+-              .state="${this.composeboxState_}"
+-              .usePecApi="${this.usePecApi_}"
+-              .showVoiceSearch="${true}"
+-              .smartTabSharingVisible="${this.smartTabSharingVisible_}"
+-              .contextManagementInComposeboxEnabled="${this.contextManagementInComposeboxEnabled_}"
+-              @context-menu-opened="${this.onComposeboxContextMenuOpened_}"
+-              @close-composebox="${this.onCloseComposebox_}"
+-              @voice-search-action="${this.onComposeVoiceSearchAction_}"
+-              .submitButtonIconType="${SubmitButtonIconType.FORWARD}"
+-              .clearAllInputsWhenSubmittingQuery="${true}"
+-              .closeOnEscape="${false}"
+-              .energyEffectEnabled="${this.energyEffectEnabled_}"
+-              .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled_}"
+-              >
+-          </ntp-composebox>
 -        ${this.enableThreadsRail_ ? html`
 -          <cr-threads-rail id="threadsRail">
 -          </cr-threads-rail>
 -        ` : ''}
--      </dialog>
+-      </div>
 -    ` : ''}
 -    ${this.showLensUploadDialog_ ? html`
 -      <ntp-lens-upload-dialog id="lensUploadDialog"
@@ -100,8 +113,8 @@
 -      </ntp-lens-upload-dialog>
 -    ` : ''}
 -  </div>
--  ${this.lazyRender_
--    && this.ntpNextFeaturesEnabled_ && this.isActionChipsVisible_ ? html`
+-  ${this.lazyRender_ && this.ntpNextFeaturesEnabled_
+-  && this.isActionChipsVisible_ && this.composeboxEnabled ? html`
 -    <ntp-action-chips
 -        ?show-background="${this.showActionChipsBackground_()}"
 -        @action-chip-click="${this.onActionChipClick_}"
@@ -121,11 +134,13 @@
    ${this.lazyRender_ ? html`
      ${this.shortcutsEnabled_ ? html`
        <cr-most-visited id="mostVisited" .theme="${this.theme_?.mostVisited || null}"
-           single-row reflow-on-overflow
-           ?expandable-tiles-enabled="${this.ntpNextFeaturesEnabled_}"
--          max-tiles-before-show-more="${this.maxTilesBeforeShowMore_}"
+@@ -125,57 +7,10 @@ import {SubmitButtonIconType} from '//re
+           max-tiles-in-collapsed-state="${this.maxTilesInCollapsedState_}"
+           max-shortcuts-in-expanded-state="${this.maxShortcutsInExpandedState_}"
+           max-most-visited-tiles-in-expanded-state="${this.maxMostVisitedTilesInExpandedState_}"
+-          max-enterprise-shortcuts="${this.maxEnterpriseShortcuts_}"
 -          @most-visited-auto-removed="${this.onMostVisitedAutoRemoved_}">
-+          max-tiles-before-show-more="${this.maxTilesBeforeShowMore_}">
++          max-enterprise-shortcuts="${this.maxEnterpriseShortcuts_}">
        </cr-most-visited>
      ` : ''}
 -    ${this.middleSlotPromoEnabled_ ? html`
@@ -157,22 +172,9 @@
 -        </cr-button>
 -      </cr-toast>
 -    ` : ''}
--    ${ this.showBrowserPromo_ ? (() => { switch (this.browserPromoType_) {
--     case "simple":
--      return html`
--        <individual-promos maxPromos="${this.browserPromoLimit_}">
--        </individual-promos>
--
--      `;
--     case "setuplist":
--      return html`
--        <setup-list-module-wrapper maxPromos="${this.browserPromoLimit_}"
--            maxCompletedPromos="${this.browserPromoCompletedLimit_}">
--        </setup-list-module-wrapper>
--      `;
--     default:
--      return '';
--    } })() : '' }
+-    ${ this.showBrowserPromo_ && this.browserPromoType_ === 'simple' ? html`
+-        <individual-promos></individual-promos>
+-    ` : '' }
    ${!this.isFooterVisible_ ? html`
 -      <a id="backgroundImageAttribution"
 -          href="${this.backgroundImageAttributionUrl_}"
@@ -188,20 +190,63 @@
 -          ${this.backgroundImageAttribution2_}
 -        </div>
 -      </a>
-       <ntp-customize-buttons id="customizeButtons"
-           ?modules-shown-to-user="${this.modulesShownToUser}"
-           ?show-background-image="${this.showBackgroundImage_}"
-@@ -194,23 +29,3 @@ import {nothing} from '//resources/lit/v
+       ${this.showCustomizeButton_ ? html`
+         <ntp-customize-buttons id="customizeButtons"
+             ?modules-shown-to-user="${this.modulesShownToUser}"
+@@ -199,66 +34,3 @@ import {SubmitButtonIconType} from '//re
    ` : ''}
    <div id="contentBottomSpacer"></div>
  </div>
--${this.showVoiceSearchOverlay_ ? html`
--  <ntp-voice-search-overlay @close="${this.onVoiceSearchOverlayClose_}">
+-${this.voiceSearchCoherenceAnySearchboxExperimentEnabled_ &&
+-    this.showVoiceSearchOverlay_ ? html`
+-  <dialog id="voiceSearchDialog" tabindex="-1" autofocus
+-      @close="${this.onVoiceSearchOverlayClose}"
+-      @click="${this.onVoiceSearchDialogClick_}">
+-    <div id="voiceSearchCardContainer">
+-      ${!this.hasVoiceSearchError &&
+-          !this.voiceSearchCoherenceSearchboxWithLiveTranscriptionEnabled_ ? html`
+-        <search-animated-glow id="voiceSearchGlow"
+-            .coloredTicTacVoiceAnimationEnabled="${true}"
+-            .isListening="${this.voiceSearchListening_}"
+-            .requiresVoice="${true}"
+-            .transcript="${this.voiceSearchTranscript_}"
+-            .receivedSpeech="${this.voiceSearchReceivedSpeech_}">
+-        </search-animated-glow>
+-      ` : ''}
+-      <!-- Pass metricSource synchronously to avoid microtask race in unit tests. -->
+-      <cr-composebox-voice-search id="voiceSearch"
+-          in-voice-search-mode
+-          @voice-permission-changed="${this.onVoicePermissionChanged_}"
+-          @voice-search-cancel="${this.onVoiceSearchCancel_}"
+-          @voice-search-final-result="${this.onVoiceSearchFinalResult_}"
+-          @voice-search-error="${this.onVoiceSearchError}"
+-          @voice-search-restart="${this.onVoiceSearchRestart_}"
+-          @transcript-update="${this.onVoiceSearchTranscriptUpdate_}"
+-          @speech-received="${this.onVoiceSearchSpeechReceived_}"
+-          @recording-stopped="${this.onVoiceSearchRecordingStopped_}"
+-          .hasErrorTimer="${true}"
+-          .pageCallbackRouter="${this.searchboxCallbackRouter_}"
+-          .autosubmitEnabled="${true}"
+-          .dynamicTimeoutEnabled="${true}"
+-          .queryLengthLimit="${this.voiceQueryLengthLimit_}"
+-          .idleTimeout="${this.voiceIdleTimeoutMs_}"
+-          .liveTranscriptEnabled="${
+-            this.voiceSearchCoherenceSearchboxWithLiveTranscriptionEnabled_}"
+-          .submitStopButtonsEnabled="${true}"
+-          .metricSource="${'NTP_REALBOX'}">
+-      </cr-composebox-voice-search>
+-    </div>
+-  </dialog>
+-` : ''}
+-${this.showVoiceSearchOverlay_ &&
+-    !this.voiceSearchCoherenceAnySearchboxExperimentEnabled_ ? html`
+-  <ntp-voice-search-overlay @close="${this.onVoiceSearchOverlayClose}">
 -  </ntp-voice-search-overlay>
 -` : ''}
--${!this.ntpRealboxNextEnabled_ && this.showComposebox_ ? html`
+-${!this.ntpRealboxNextEnabled_ &&
+-    (this.showComposebox_ || this.showVoiceSearchScrim_) ? html`
 -  <div id="scrim"
--      @click="${this.composeboxCloseByClickOutside_ ? this.onComposeboxClickOutside_ : nothing}"></div>
+-      @click="${this.onScrimClick_}"></div>
 -` : ''}
 -<svg>
 -  <defs>
@@ -261,7 +306,7 @@
 -        title="$i18n{customizeThisPageWallpaperSearch}"
 -        aria-pressed="${this.showWallpaperSearch}">
 -      <cr-icon id="wallpaperSearchIcon" class="customize-icon"
--          slot="prefix-icon" icon="ntp:sparkle"></cr-icon>
+-          slot="prefix-icon" icon="ntp:sparkle-custom"></cr-icon>
 -      <div id="wallpaperSearchText" class="customize-text"
 -          ?hidden="${this.showWallpaperSearch}">
 -        $i18n{wallpaperSearchButton}
@@ -271,7 +316,7 @@
    <cr-button id="customizeButton" class="customize-button"
        @click="${this.onCustomizeClick_}" title="$i18n{customizeThisPage}"
        aria-pressed="${this.showCustomize}">
-     <cr-icon class="customize-icon" slot="prefix-icon" icon="ntp:pencil">
+     <cr-icon class="customize-icon" slot="prefix-icon" icon="ntp:pencil-custom">
      </cr-icon>
 -    <div id="customizeText" class="customize-text"
 -        ?hidden="${!this.showCustomizeChromeText}">
@@ -282,18 +327,18 @@
  <!--_html_template_end_-->`;
 --- a/chrome/browser/resources/new_tab_page/app.ts
 +++ b/chrome/browser/resources/new_tab_page/app.ts
-@@ -3,9 +3,6 @@
+@@ -2,9 +2,6 @@
+ // Use of this source code is governed by a BSD-style license that can be
  // found in the LICENSE file.
  
- import './action_chips/action_chips.js';
--import './iframe.js';
 -import './logo.js';
+-import './ntp_composebox.js';
 -import './ntp_searchbox.js';
  import '/strings.m.js';
  import 'chrome://new-tab-page/shared/customize_buttons/customize_buttons.js';
- import 'chrome://resources/cr_elements/cr_button/cr_button.js';
-@@ -22,9 +19,6 @@ import {VoiceSearchAction as ComposeVoic
- import {HelpBubbleMixinLit} from 'chrome://resources/cr_components/help_bubble/help_bubble_mixin_lit.js';
+ import 'chrome://resources/cr_components/composebox/threads_rail.js';
+@@ -22,9 +19,6 @@ import {HelpBubbleMixinLit} from 'chrome
+ import type {SearchAnimatedGlowElement} from 'chrome://resources/cr_components/search/animated_glow.js';
  import type {CrToastElement} from 'chrome://resources/cr_elements/cr_toast/cr_toast.js';
  import {assert, assertNotReached} from 'chrome://resources/js/assert.js';
 -import type {ClickInfo} from 'chrome://resources/js/browser_command.mojom-webui.js';
@@ -302,7 +347,7 @@
  import {hexColorToSkColor, skColorToRgba} from 'chrome://resources/js/color_utils.js';
  import {EventTracker} from 'chrome://resources/js/event_tracker.js';
  import {FocusOutlineManager} from 'chrome://resources/js/focus_outline_manager.js';
-@@ -43,8 +37,6 @@ import {SidePanelOpenTrigger} from './cu
+@@ -47,8 +41,6 @@ import {SidePanelOpenTrigger} from './cu
  import {CustomizeButtonsProxy} from './customize_buttons_proxy.js';
  import {CustomizeChromeSection} from './customize_chrome.mojom-webui.js';
  import {CustomizeDialogPage} from './customize_dialog_types.js';
@@ -311,15 +356,15 @@
  import {recordBoolean, recordDuration, recordEnumeration, recordLinearValue, recordLoadDuration, recordSparseValueWithPersistentHash} from './metrics_utils.js';
  import {ParentTrustedDocumentProxy} from './modules/microsoft_auth_frame_connector.js';
  import type {PageCallbackRouter, PageHandlerRemote, Theme} from './new_tab_page.mojom-webui.js';
-@@ -52,7 +44,6 @@ import {NtpBackgroundImageSource} from '
+@@ -56,7 +48,6 @@ import {NtpBackgroundImageSource} from '
  import {NewTabPageProxy} from './new_tab_page_proxy.js';
- import type {MicrosoftAuthUntrustedDocumentRemote} from './ntp_microsoft_auth_shared_ui.mojom-webui.js';
+ import type {NtpComposeboxElement} from './ntp_composebox.js';
  import {ShowNtpPromosResult} from './ntp_promo.mojom-webui.js';
 -import type {NtpSearchboxElement} from './ntp_searchbox.js';
  import {$$} from './utils.js';
  import {Action as VoiceAction, recordVoiceAction} from './voice_search_overlay.js';
  import {WindowProxy} from './window_proxy.js';
-@@ -63,17 +54,6 @@ enum ModuleLoadStatus {
+@@ -67,17 +58,6 @@ enum ModuleLoadStatus {
    MODULE_LOAD_COMPLETE = 2,
  }
  
@@ -337,12 +382,15 @@
  /**
   * Elements on the NTP. This enum must match the numbering for NTPElement in
   * enums.xml. These values are persisted to logs. Entries should not be
-@@ -122,13 +102,10 @@ enum NtpWallpaperSearchButtonHideConditi
+@@ -126,7 +106,6 @@ enum NtpWallpaperSearchButtonHideConditi
  }
  
  const CUSTOMIZE_URL_PARAM: string = 'customize';
 -const OGB_IFRAME_ORIGIN = 'chrome-untrusted://new-tab-page';
  const MSAL_IFRAME_ORIGIN = 'chrome-untrusted://ntp-microsoft-auth';
+ const VOICE_QUERY_LENGTH_LIMIT = 120;
+ const VOICE_IDLE_TIMEOUT_MS = 8000;
+@@ -137,8 +116,6 @@ const COMPOSEBOX_INERT_ALLOWLIST = [
  
  export const CUSTOMIZE_CHROME_BUTTON_ELEMENT_ID =
      'CustomizeButtonsHandler::kCustomizeChromeButtonElementId';
@@ -351,20 +399,21 @@
  
  // 900px ~= 561px (max value for --ntp-search-box-width) * 1.5 + some margin.
  const realboxCanShowSecondarySideMediaQueryList =
-@@ -163,12 +140,6 @@ const AppElementBase = HelpBubbleMixinLi
+@@ -175,13 +152,6 @@ const AppElementBase = HelpBubbleMixinLi
  export interface AppElement {
    $: {
      customizeButtons: CustomizeButtonsElement,
 -    oneGoogleBarClipPath: HTMLElement,
 -    logo: LogoElement,
 -    searchbox: NtpSearchboxElement,
--    composebox: ComposeboxElement,
+-    composebox: NtpComposeboxElement,
 -    undoToast: CrToastElement,
 -    undoToastMessage: HTMLElement,
+-    voiceSearchDialog: HTMLDialogElement,
    };
  }
  
-@@ -218,9 +189,6 @@ export class AppElement extends AppEleme
+@@ -233,9 +203,6 @@ export class AppElement extends AppEleme
        // =======================================================================
  
        composeboxState_: {type: Object},
@@ -374,7 +423,7 @@
        theme_: {type: Object},
        showCustomize_: {type: Boolean},
        showCustomizeChromeText_: {type: Boolean},
-@@ -359,9 +327,6 @@ export class AppElement extends AppEleme
+@@ -391,9 +358,6 @@ export class AppElement extends AppEleme
        loadTimeData.getBoolean('searchboxShowComposebox');
  
    protected accessor composeboxState_: ComposeboxState|null = null;
@@ -384,7 +433,15 @@
    protected accessor theme_: Theme|null = null;
    protected accessor showCustomize_: boolean = false;
    protected accessor showCustomizeChromeText_: boolean = false;
-@@ -477,13 +442,6 @@ export class AppElement extends AppEleme
+@@ -503,7 +467,6 @@ export class AppElement extends AppEleme
+       loadTimeData.getBoolean('contextMenuAnimationLimitingEnabled');
+   protected accessor searchboxCallbackRouter_: SearchboxPageCallbackRouter;
+ 
+-  private voiceSearchActivatedByKeyboard_: boolean = false;
+   private accessor selectedCustomizeDialogPage_: string|null = null;
+   private accessor middleSlotPromoLoaded_: boolean = false;
+   private accessor modulesLoadedStatus_: ModuleLoadStatus =
+@@ -541,13 +504,6 @@ export class AppElement extends AppEleme
      this.shouldPrintPerformance_ =
          new URLSearchParams(location.search).has('print_perf');
  
@@ -398,7 +455,7 @@
      this.showCustomize_ =
          WindowProxy.getInstance().url.searchParams.has(CUSTOMIZE_URL_PARAM);
  
-@@ -584,30 +542,12 @@ export class AppElement extends AppEleme
+@@ -646,30 +602,12 @@ export class AppElement extends AppEleme
        this.setCustomizeChromeSidePanelVisible_(this.showCustomize_);
        recordCustomizeChromeOpen(NtpCustomizeChromeEntryPoint.URL);
      }
@@ -429,20 +486,22 @@
      if (loadTimeData.getString('backgroundImageUrl')) {
        this.backgroundManager_.getBackgroundImageLoadTime().then(
            time => {
-@@ -738,11 +678,6 @@ export class AppElement extends AppEleme
+@@ -809,13 +747,6 @@ export class AppElement extends AppEleme
+     if (!this.modulesEnabled_) {
        this.recordBrowserPromoMetrics_();
      }
- 
--    if (this.ntpRealboxNextEnabled_ && this.realboxLayoutMode_ !== '') {
+-
+-    if (this.ntpRealboxNextEnabled_) {
 -      this.registerHelpBubble(
--          CONTEXTUAL_ENTRYPOINT_ELEMENT_ID, ['#searchbox', '#context'],
+-          CONTEXTUAL_ENTRYPOINT_ELEMENT_ID,
+-          ['#searchbox', '#context', '#entrypointButton', '#entrypoint'],
 -          {fixed: true});
 -    }
    }
  
    override updated(changedProperties: PropertyValues<this>) {
-@@ -784,31 +719,12 @@ export class AppElement extends AppEleme
-       composeboxDialog.showModal();
+@@ -853,37 +784,11 @@ export class AppElement extends AppEleme
+       this.onShowComposeboxChange_();
      }
  
 -    if (changedPrivateProperties.has('oneGoogleBarLoaded_') ||
@@ -455,6 +514,32 @@
          this.showComposebox_ && this.enableThreadsRail_) {
        recordBoolean('NewTabPage.ThreadsRail.Shown', true);
      }
+ 
+-    if (changedPrivateProperties.has('showVoiceSearchOverlay_') &&
+-        this.voiceSearchCoherenceAnySearchboxExperimentEnabled_) {
+-      if (this.showVoiceSearchOverlay_) {
+-        this.voiceSearchListening_ = true;
+-        this.voiceSearchReceivedSpeech_ = false;
+-        this.voiceSearchTranscript_ = '';
+-
+-        const dialog = this.shadowRoot.querySelector<HTMLDialogElement>(
+-            '#voiceSearchDialog');
+-        assert(dialog);
+-        dialog.showModal();
+-
+-        const voiceSearch =
+-            this.shadowRoot.querySelector<ComposeboxVoiceSearchElement>(
+-                '#voiceSearch');
+-        assert(voiceSearch);
+-        voiceSearch.activatedByKeyboard = this.voiceSearchActivatedByKeyboard_;
+-        voiceSearch.start();
+-      }
+-    }
+   }
+ 
+   // For voice coherence: when error event is fired, this will run.
+@@ -901,19 +806,6 @@ export class AppElement extends AppEleme
+     this.voiceSearchTranscript_ = '';
    }
  
 -  // Called to update the OGB of relevant NTP state changes.
@@ -473,12 +558,20 @@
    private computeShowCustomizeChromeText_(): boolean {
      if (this.showWallpaperSearchButton_) {
        return false;
-@@ -901,26 +817,15 @@ export class AppElement extends AppEleme
+@@ -984,7 +876,6 @@ export class AppElement extends AppEleme
+     }
+     this.pageHandler_.onContextualSearchIPHEngaged();
+     if (this.hasRealboxOverride(detail.fuseboxAction)) {
+-      this.$.searchbox.handleFuseboxAction(detail.fuseboxAction);
+       return;
+     }
+     this.openComposeboxForActionChip_(detail);
+@@ -1061,29 +952,16 @@ export class AppElement extends AppEleme
      const composebox =
-         this.shadowRoot.querySelector<ComposeboxElement>('#composebox');
+         this.shadowRoot.querySelector<NtpComposeboxElement>('#composebox');
      assert(composebox);
 -    const closeComposebox = new CustomEvent('closeComposebox', {
--      detail: {composeboxText: composebox.getText()},
+-      detail: {composeboxText: composebox.input},
 -      bubbles: true,
 -      cancelable: true,
 -    });
@@ -487,30 +580,86 @@
 +    this.onCloseComposebox_();
    }
  
+   protected onComposeboxContextMenuOpened_() {
+-    this.$.searchbox.closeContextMenu();
+   }
+ 
 -  protected onCloseComposebox_(e: CustomEvent<{composeboxText?: string}>) {
 +  protected onCloseComposebox_() {
-     const composeboxDialog =
-         this.shadowRoot.querySelector<HTMLDialogElement>('#composeboxDialog');
-     assert(composeboxDialog);
-     composeboxDialog.close();
- 
+     if (!this.showComposebox_) {
+       return;
+     }
+-    this.$.searchbox.closeContextMenu();
 -    const composeboxText = e.detail.composeboxText;
 -
 -    if (composeboxText && composeboxText.trim()) {
 -      this.$.searchbox.setInputText(composeboxText);
 -    }
      const composebox =
-         this.shadowRoot.querySelector<ComposeboxElement>('#composebox');
+         this.shadowRoot.querySelector<NtpComposeboxElement>('#composebox');
      assert(composebox);
-@@ -932,7 +837,6 @@ export class AppElement extends AppEleme
-     this.toggleComposebox_();
+@@ -1095,12 +973,10 @@ export class AppElement extends AppEleme
+     this.closeComposebox_();
      this.logoColor_ = this.computeLogoColor_();
      this.singleColoredLogo_ = this.computeSingleColoredLogo_();
 -    this.updateOneGoogleBarAppearance_();
    }
  
    protected onOpenVoiceSearch_() {
-@@ -1135,101 +1039,6 @@ export class AppElement extends AppEleme
+     this.showVoiceSearchOverlay_ = true;
+-    this.voiceSearchActivatedByKeyboard_ = false;
+     // When the experiment is enabled, voice search metrics are logged directly
+     // by the shared component instead of NTP to prevent duplicate emissions.
+     if (!this.voiceSearchCoherenceAnySearchboxExperimentEnabled_) {
+@@ -1266,33 +1142,10 @@ export class AppElement extends AppEleme
+     WindowProxy.getInstance().navigate(queryUrl.href);
+   }
+ 
+-  protected onVoiceSearchRecordingStopped_(e: CustomEvent<string>) {
+-    const query = e.detail;
+-    const dialog = this.shadowRoot.querySelector<HTMLDialogElement>(
+-        '#voiceSearchDialog');
+-    if (dialog) {
+-      dialog.close();
+-    }
+-    this.onVoiceSearchOverlayClose();
+-
+-    if (query && query.trim().length > 0) {
+-      this.$.searchbox.setInputText(query);
+-      this.$.searchbox.focusInput();
+-      this.$.searchbox.queryAutocomplete(query, false, false);
+-    }
+-  }
+-  /**
+-   * Handles <CTRL> + <SHIFT> + <.> (also <CMD> + <SHIFT> + <.> on mac) to open
+-   * voice search.
+-   */
+   private onWindowKeydown_(e: KeyboardEvent) {
+     if (!this.isConnected) {
+       return;
+     }
+-    let ctrlKeyPressed = e.ctrlKey;
+-    // <if expr="is_macosx">
+-    ctrlKeyPressed = ctrlKeyPressed || e.metaKey;
+-    // </if>
+     if (e.key === 'Escape' && this.showComposebox_) {
+       const composebox =
+           this.shadowRoot.querySelector<NtpComposeboxElement>('#composebox');
+@@ -1302,13 +1155,6 @@ export class AppElement extends AppEleme
+         return;
+       }
+     }
+-    if (ctrlKeyPressed && e.code === 'Period' && e.shiftKey) {
+-      this.showVoiceSearchOverlay_ = true;
+-      this.voiceSearchActivatedByKeyboard_ = true;
+-      if (!this.voiceSearchCoherenceAnySearchboxExperimentEnabled_) {
+-        recordVoiceAction(VoiceAction.ACTIVATE_KEYBOARD);
+-      }
+-    }
+   }
+ 
+   private rgbaOrInherit_(skColor: SkColor|null): string {
+@@ -1402,101 +1248,6 @@ export class AppElement extends AppEleme
      return !!this.theme_ && (!!this.theme_.logoColor || this.theme_.isDark);
    }
  
@@ -612,7 +761,25 @@
    protected onNtpMiddleSlotPromoLoaded_() {
      this.middleSlotPromoLoaded_ = true;
    }
-@@ -1497,33 +1306,14 @@ export class AppElement extends AppEleme
+@@ -1610,17 +1361,6 @@ export class AppElement extends AppEleme
+   }
+ 
+   private onWindowClick_(e: Event) {
+-    if (this.ntpRealboxNextEnabled_) {
+-      const searchbox = this.shadowRoot.querySelector('ntp-searchbox');
+-      const isClickOnBubble = e.composedPath().some(
+-          el => (el as HTMLElement)?.tagName === 'HELP-BUBBLE');
+-      const isClickOnSearchbox =
+-          searchbox && e.composedPath().includes(searchbox);
+-      if (!isClickOnBubble && isClickOnSearchbox) {
+-        this.hideHelpBubble(CONTEXTUAL_ENTRYPOINT_ELEMENT_ID);
+-      }
+-    }
+-
+     if (e.composedPath() && e.composedPath()[0] === $$(this, '#content')) {
+       recordClick(NtpElement.BACKGROUND);
+       return;
+@@ -1816,33 +1556,14 @@ export class AppElement extends AppEleme
     * multiple toasts at the same time. Otherwise, the first pending toast is
     * popped and shown.
     */
@@ -645,15 +812,15 @@
 -    this.processPendingUndoToasts_();
 -  }
 +  protected onUndoButtonClick_() {}
- }
  
- declare global {
+   private onShowComposeboxChange_() {
+     const notSelector =
 --- a/chrome/browser/resources/new_tab_page/new_tab_page.ts
 +++ b/chrome/browser/resources/new_tab_page/new_tab_page.ts
-@@ -21,7 +21,7 @@ export {BrowserCommandProxy} from 'chrom
- export {BrowserProxyImpl} from 'chrome://resources/js/metrics_reporter/browser_proxy.js';
- export {MetricsReporterImpl} from 'chrome://resources/js/metrics_reporter/metrics_reporter.js';
+@@ -24,7 +24,7 @@ export {MetricsReporterImpl} from 'chrom
  export {getTrustedHTML} from 'chrome://resources/js/static_types.js';
+ export type {FuseboxAction} from 'chrome://resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
+ export {InputSource, QueryActionOverride, SearchboxOverride, SuggestInventory} from 'chrome://resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
 -export {AppElement, CONTEXTUAL_ENTRYPOINT_ELEMENT_ID, CUSTOMIZE_CHROME_BUTTON_ELEMENT_ID, NtpCustomizeChromeEntryPoint, NtpElement} from './app.js';
 +export {AppElement, CUSTOMIZE_CHROME_BUTTON_ELEMENT_ID, NtpCustomizeChromeEntryPoint, NtpElement} from './app.js';
  export {BackgroundManager} from './background_manager.js';

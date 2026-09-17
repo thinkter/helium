@@ -34,7 +34,7 @@
  #endif  // COMPONENTS_SEARCH_ENGINES_TEMPLATE_URL_DATA_UTIL_H_
 --- a/components/search_engines/BUILD.gn
 +++ b/components/search_engines/BUILD.gn
-@@ -35,6 +35,8 @@ static_library("search_engines") {
+@@ -43,6 +43,8 @@ static_library("search_engines") {
      "search_terms_data.h",
      "template_url.cc",
      "template_url.h",
@@ -43,7 +43,7 @@
      "template_url_data.cc",
      "template_url_data.h",
      "template_url_data_util.cc",
-@@ -81,6 +83,7 @@ static_library("search_engines") {
+@@ -90,6 +92,7 @@ static_library("search_engines") {
      "//components/country_codes",
      "//components/crash/core/common:crash_key",
      "//components/database_utils",
@@ -61,7 +61,7 @@
  #include "third_party/search_engines_data/resources/definitions/prepopulated_engines.h"
  #include "ui/base/l10n/l10n_util.h"
  #include "url/gurl.h"
-@@ -522,3 +523,20 @@ std::unique_ptr<TemplateURLData> Templat
+@@ -528,3 +529,20 @@ std::unique_ptr<TemplateURLData> Templat
  
    return turl;
  }
@@ -103,7 +103,7 @@
  #include "components/search_engines/template_url_prepopulate_data.h"
  #include "components/search_engines/template_url_prepopulate_data_resolver.h"
  #include "components/search_engines/template_url_service_client.h"
-@@ -72,6 +76,7 @@
+@@ -73,6 +77,7 @@
  #include "components/sync/protocol/search_engine_specifics.pb.h"
  #include "components/url_formatter/url_fixer.h"
  #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
@@ -111,15 +111,15 @@
  #include "url/gurl.h"
  #include "url/origin.h"
  #include "url/third_party/mozilla/url_parse.h"
-@@ -577,6 +582,7 @@ class TemplateURLService::PreLoadingProv
- // TemplateURLService ---------------------------------------------------------
+@@ -603,6 +608,7 @@ TemplateURLService::PrepopulatedAndRecen
+ 
  TemplateURLService::TemplateURLService(
      PrefService& prefs,
 +    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
      search_engines::SearchEngineChoiceService& search_engine_choice_service,
      TemplateURLPrepopulateData::Resolver& prepopulate_data_resolver,
      std::unique_ptr<SearchTermsData> search_terms_data,
-@@ -589,6 +595,8 @@ TemplateURLService::TemplateURLService(
+@@ -615,6 +621,8 @@ TemplateURLService::TemplateURLService(
        prepopulate_data_resolver_(prepopulate_data_resolver),
        search_terms_data_(std::move(search_terms_data)),
        web_data_service_(web_data_service),
@@ -128,7 +128,7 @@
        client_(std::move(client)),
        dsp_change_callback_(dsp_change_callback),
        pre_loading_providers_(std::make_unique<PreLoadingProviders>()),
-@@ -605,11 +613,13 @@ TemplateURLService::TemplateURLService(
+@@ -631,11 +639,13 @@ TemplateURLService::TemplateURLService(
  
  TemplateURLService::TemplateURLService(
      PrefService& prefs,
@@ -142,7 +142,7 @@
            search_engine_choice_service,
            prepopulate_data_resolver,
            /*search_terms_data=*/std::make_unique<SearchTermsData>(),
-@@ -690,6 +700,10 @@ bool TemplateURLService::ShowInActivesLi
+@@ -716,6 +726,10 @@ bool TemplateURLService::ShowInActivesLi
  }
  
  bool TemplateURLService::HiddenFromLists(const TemplateURL* t_url) const {
@@ -153,7 +153,7 @@
    switch (t_url->policy_origin()) {
      case TemplateURLData::PolicyOrigin::kDefaultSearchProvider:
        return false;
-@@ -1527,11 +1541,37 @@ void TemplateURLService::Load() {
+@@ -1677,11 +1691,39 @@ void TemplateURLService::Load() {
  
    if (web_data_service_) {
      load_handle_ = web_data_service_->GetKeywords(this);
@@ -165,8 +165,10 @@
  
 +void TemplateURLService::LoadBangs() {
 +  VLOG(2) << "LoadBangs() called";
-+  bang_manager_->LoadBangs(url_loader_factory_, prefs_.get(),
-+    base::BindOnce(&TemplateURLService::BangsLoadedCallback, base::Unretained(this)));
++  bang_manager_->LoadBangs(
++      url_loader_factory_, prefs_.get(),
++      base::BindOnce(&TemplateURLService::BangsLoadedCallback,
++                     weak_ptr_factory_.GetWeakPtr()));
 +}
 +
 +void TemplateURLService::BangsLoadedCallback() {
@@ -191,7 +193,7 @@
  base::CallbackListSubscription TemplateURLService::RegisterOnLoadedCallback(
      base::OnceClosure callback) {
    return loaded_ ? base::CallbackListSubscription()
-@@ -2519,6 +2559,13 @@ void TemplateURLService::Init() {
+@@ -2669,6 +2711,13 @@ void TemplateURLService::Init() {
            &TemplateURLService::OnDefaultSearchProviderGUIDChanged,
            base::Unretained(this)));
  
@@ -221,7 +223,7 @@
  #if BUILDFLAG(IS_ANDROID)
  #include "base/android/scoped_java_ref.h"
  #endif
-@@ -155,6 +157,7 @@ class TemplateURLService final : public
+@@ -184,6 +186,7 @@ class TemplateURLService final : public
  
    TemplateURLService(
        PrefService& prefs,
@@ -229,7 +231,7 @@
        search_engines::SearchEngineChoiceService& search_engine_choice_service,
        TemplateURLPrepopulateData::Resolver& prepopulate_data_resolver,
        std::unique_ptr<SearchTermsData> search_terms_data,
-@@ -166,6 +169,7 @@ class TemplateURLService final : public
+@@ -195,6 +198,7 @@ class TemplateURLService final : public
    // some template URL data.
    explicit TemplateURLService(
        PrefService& prefs,
@@ -237,7 +239,7 @@
        search_engines::SearchEngineChoiceService& search_engine_choice_service,
        TemplateURLPrepopulateData::Resolver& prepopulate_data_resolver,
        base::span<const TemplateURLService::Initializer> initializers = {});
-@@ -484,6 +488,8 @@ class TemplateURLService final : public
+@@ -547,6 +551,8 @@ class TemplateURLService final : public
    // OnTemplateURLServiceChanged.
    void Load();
  
@@ -246,7 +248,7 @@
    // Registers a callback to be called when the service has loaded.
    //
    // If the service has already loaded, this function does nothing.
-@@ -722,6 +728,8 @@ class TemplateURLService final : public
+@@ -785,6 +791,8 @@ class TemplateURLService final : public
  
    void Init();
  
@@ -255,7 +257,7 @@
    // Simulate a loaded `TemplateURLService`.
    void ApplyInitializersForTesting(
        base::span<const TemplateURLService::Initializer> initializers);
-@@ -924,6 +932,10 @@ class TemplateURLService final : public
+@@ -982,6 +990,10 @@ class TemplateURLService final : public
    // Service used to store entries.
    scoped_refptr<KeywordWebDataService> web_data_service_;
  
@@ -377,7 +379,8 @@
 +
 +    url_loader_->DownloadToString(
 +        url_loader_factory.get(),
-+        base::BindOnce(&BangManager::OnSimpleLoaderComplete, base::Unretained(this)),
++        base::BindOnce(&BangManager::OnSimpleLoaderComplete,
++                       weak_ptr_factory_.GetWeakPtr()),
 +        5e6 /* 5 MB */
 +    );
 +}
@@ -484,11 +487,10 @@
 +    return bangs_;
 +}
 +
-+}
-+
++}  // namespace Bangs
 --- /dev/null
 +++ b/components/search_engines/template_url_bang_manager.h
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,76 @@
 +// Copyright 2025 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -550,15 +552,16 @@
 +        void LoadManifestFromString(const std::string& manifest);
 +        BangCategory GetCategoryFromJSONObject(std::string_view sc) const;
 +
-+        // Weak factory for callbacks.
-+        base::WeakPtrFactory<BangManager> weak_ptr_factory_{this};
 +        // SimpleURLLoader instance.
 +        std::unique_ptr<network::SimpleURLLoader> url_loader_;
 +
 +        std::vector<Bang> bangs_;
-+        bool load_pending_;
++        bool load_pending_ = false;
 +        std::vector<base::OnceClosure> callbacks_;
 +        std::map<size_t, BangCategory> category_map_;
++
++        // Weak factory for callbacks.
++        base::WeakPtrFactory<BangManager> weak_ptr_factory_{this};
 +    };
 +}
 +
@@ -566,7 +569,7 @@
 +
 --- a/components/omnibox/browser/autocomplete_input.cc
 +++ b/components/omnibox/browser/autocomplete_input.cc
-@@ -740,9 +740,9 @@ bool AutocompleteInput::HasHTTPSScheme(c
+@@ -750,9 +750,9 @@ bool AutocompleteInput::HasHTTPSScheme(c
  // static
  AutocompleteInput::FeaturedKeywordMode
  AutocompleteInput::GetFeaturedKeywordMode(std::u16string_view text) {
@@ -578,16 +581,16 @@
      return FeaturedKeywordMode::kPrefix;
    return FeaturedKeywordMode::kFalse;
  }
-@@ -885,6 +885,7 @@ std::u16string AutocompleteInput::Autoco
-     const std::u16string& input,
+@@ -895,6 +895,7 @@ std::u16string AutocompleteInput::SplitK
+     std::u16string_view input,
      bool trim_leading_whitespace,
      std::u16string* remaining_input) {
 +  std::u16string_view input_view = input;
    // Find end of first token.  The AutocompleteController has trimmed leading
    // whitespace, so we need not skip over that.
    const size_t first_white(input.find_first_of(base::kWhitespaceUTF16));
-@@ -893,6 +894,39 @@ std::u16string AutocompleteInput::Autoco
-     return input;  // Only one token provided.
+@@ -903,6 +904,39 @@ std::u16string AutocompleteInput::SplitK
+     return std::u16string(input);  // Only one token provided.
    }
  
 +  const size_t first_exclamation(input.find_first_of('!'));
@@ -647,16 +650,16 @@
    } else {
      guid = base::Uuid::GenerateRandomV4().AsLowercaseString();
    }
-@@ -118,7 +121,7 @@ TemplateURLData::TemplateURLData(
+@@ -119,7 +122,7 @@ TemplateURLData::TemplateURLData(
        regulatory_origin(RegulatoryExtensionType::kDefault),
        usage_count(0),
        prepopulate_id(prepopulate_id),
 -      sync_guid(GenerateGUID(prepopulate_id, 0)),
 +      sync_guid(GenerateGUID(prepopulate_id, 0, 0)),
        preconnect_to_search_url(preconnect_to_search_url),
-       prefetch_likely_navigations(prefetch_likely_navigations) {
-   SetShortName(name);
-@@ -184,7 +187,7 @@ std::vector<uint8_t> TemplateURLData::Ge
+       prefetch_likely_navigations(prefetch_likely_navigations),
+       send_x_geo_header(send_x_geo_header) {
+@@ -189,7 +192,7 @@ std::vector<uint8_t> TemplateURLData::Ge
  }
  
  void TemplateURLData::GenerateSyncGUID() {
@@ -667,7 +670,7 @@
  size_t TemplateURLData::EstimateMemoryUsage() const {
 --- a/components/search_engines/template_url_data.h
 +++ b/components/search_engines/template_url_data.h
-@@ -270,6 +270,9 @@ struct TemplateURLData {
+@@ -277,6 +277,9 @@ struct TemplateURLData {
    // starter_pack_id > 0.
    int starter_pack_id{0};
  
@@ -679,7 +682,7 @@
  
 --- a/components/search_engines/template_url.cc
 +++ b/components/search_engines/template_url.cc
-@@ -1758,6 +1758,8 @@ bool TemplateURL::IsBetterThanConflictin
+@@ -1754,6 +1754,8 @@ bool TemplateURL::IsBetterThanConflictin
                                  : base::Time(),
          // Prefer engines that CANNOT be auto-replaced.
          !engine->safe_for_autoreplace(),
@@ -690,7 +693,7 @@
          // Favor prepopulated engines over other auto-generated engines.
 --- a/components/search_engines/template_url.h
 +++ b/components/search_engines/template_url.h
-@@ -855,6 +855,8 @@ class TemplateURL {
+@@ -881,6 +881,8 @@ class TemplateURL {
             policy_origin() == TemplateURLData::PolicyOrigin::kSearchAggregator;
    }
  
@@ -725,7 +728,7 @@
  COMPONENT_EXPORT(HELIUM) GURL GetDummyURL();
 --- a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
 +++ b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
-@@ -2245,6 +2245,9 @@ void AddPrivacyStrings(content::WebUIDat
+@@ -2522,6 +2522,9 @@ void AddPrivacyStrings(content::WebUIDat
          IDS_SETTINGS_HELIUM_SERVICES_EXT_PROXY_TOGGLE},
        {"heliumExtProxyToggleDescription",
          IDS_SETTINGS_HELIUM_SERVICES_EXT_PROXY_TOGGLE_DESCRIPTION},
@@ -737,19 +740,19 @@
          IDS_SETTINGS_HELIUM_SERVICES_OVERRIDE_DESCRIPTION},
 --- a/chrome/app/settings_strings.grdp
 +++ b/chrome/app/settings_strings.grdp
-@@ -1999,6 +1999,12 @@
-   <message name="IDS_SETTINGS_HELIUM_SERVICES_EXT_PROXY_TOGGLE_DESCRIPTION" desc="Description of the toggle for enabling/disabling of downloading and proxying extensions">
-     When enabled, Helium will proxy extension downloads and updates to protect your privacy. When disabled, downloading and updating extensions will not work.
-   </message>
-+  <message name="IDS_SETTINGS_HELIUM_SERVICES_BANGS_TOGGLE" desc="Toggle for enabling/disabling of downloading bangs">
-+    Allow downloading the !bangs list
-+  </message>
-+  <message name="IDS_SETTINGS_HELIUM_SERVICES_BANGS_TOGGLE_DESCRIPTION" desc="Description of the toggle for enabling/disabling of downloading bangs">
-+    Helium will fetch a list of bangs that help you browse the Internet faster, such as !w or !gh. When disabled, bangs will not work.
-+  </message>
-   <message name="IDS_SETTINGS_HELIUM_SERVICES_OVERRIDE" desc="Text input for overriding the Helium services server">
-     Use your own instance of Helium services
-   </message>
+@@ -1593,6 +1593,12 @@
+     <message name="IDS_SETTINGS_HELIUM_SERVICES_EXT_PROXY_TOGGLE_DESCRIPTION" desc="Description of the toggle for enabling/disabling of downloading and proxying extensions">
+       When enabled, Helium will proxy extension downloads and updates to protect your privacy. When disabled, downloading and updating extensions will not work.
+     </message>
++    <message name="IDS_SETTINGS_HELIUM_SERVICES_BANGS_TOGGLE" desc="Toggle for enabling/disabling of downloading bangs">
++      Allow downloading the !bangs list
++    </message>
++    <message name="IDS_SETTINGS_HELIUM_SERVICES_BANGS_TOGGLE_DESCRIPTION" desc="Description of the toggle for enabling/disabling of downloading bangs">
++      Helium will fetch a list of bangs that help you browse the Internet faster, such as !w or !gh. When disabled, bangs will not work.
++    </message>
+     <message name="IDS_SETTINGS_HELIUM_SERVICES_OVERRIDE" desc="Text input for overriding the Helium services server">
+       Use your own instance of Helium services
+     </message>
 --- a/chrome/browser/resources/settings/privacy_page/services_page.html
 +++ b/chrome/browser/resources/settings/privacy_page/services_page.html
 @@ -87,6 +87,11 @@
@@ -766,7 +769,7 @@
      </template>
 --- a/chrome/browser/ui/browser_ui_prefs.cc
 +++ b/chrome/browser/ui/browser_ui_prefs.cc
-@@ -221,6 +221,7 @@ void RegisterBrowserUserPrefs(user_prefs
+@@ -229,6 +229,7 @@ void RegisterBrowserUserPrefs(user_prefs
      registry->RegisterIntegerPref(prefs::kHeliumSchemaVersion, 0);
      registry->RegisterBooleanPref(prefs::kHeliumDisableSchemaAlerts, false);
      registry->RegisterBooleanPref(prefs::kHeliumServicesEnabled, true);
@@ -776,7 +779,7 @@
      registry->RegisterBooleanPref(prefs::kHeliumDidOnboarding, false);
 --- a/chrome/browser/extensions/api/settings_private/prefs_util.cc
 +++ b/chrome/browser/extensions/api/settings_private/prefs_util.cc
-@@ -396,6 +396,8 @@ const PrefsUtil::TypedPrefMap& PrefsUtil
+@@ -443,6 +443,8 @@ const PrefsUtil::TypedPrefMap& PrefsUtil
        settings_api::PrefType::kBoolean;
    (*s_allowlist)[::prefs::kHeliumExtProxyEnabled] =
        settings_api::PrefType::kBoolean;
@@ -799,7 +802,7 @@
  #endif  // COMPONENTS_HELIUM_SERVICES_PREF_NAMES_H_
 --- a/third_party/metrics_proto/omnibox_event.proto
 +++ b/third_party/metrics_proto/omnibox_event.proto
-@@ -801,6 +801,8 @@ message OmniboxEventProto {
+@@ -819,6 +819,8 @@ message OmniboxEventProto {
                              // or tabbing to it.
      TOOLBELT = 9;           // Select and activate a search shortcuts action
                              // from the omnibox toolbelt.
@@ -810,8 +813,8 @@
    KeywordModeEntryMethod keyword_mode_entry_method = 20;
 --- a/chrome/browser/ui/omnibox/omnibox_edit_model.h
 +++ b/chrome/browser/ui/omnibox/omnibox_edit_model.h
-@@ -310,6 +310,9 @@ class OmniboxEditModel {
-     return !is_keyword_hint_ && !keyword_.empty();
+@@ -337,6 +337,9 @@ class OmniboxEditModel {
+     return keyword_state == KeywordState::kKeyword;
    }
  
 +  // Accepts the bang at the end of the user query.
@@ -820,7 +823,7 @@
    // Accepts the current keyword hint as a keyword. `entry_method` indicates how
    // the user entered keyword mode.
    void AcceptKeyword(
-@@ -684,6 +687,10 @@ class OmniboxEditModel {
+@@ -716,6 +719,10 @@ class OmniboxEditModel {
    // triggering is enabled, false otherwise.
    bool AllowKeywordSpaceTriggering() const;
  
@@ -833,7 +836,7 @@
    // - youtube| -> youtube |       (a space was appended to a keyword)
 --- a/chrome/browser/ui/omnibox/omnibox_edit_model.cc
 +++ b/chrome/browser/ui/omnibox/omnibox_edit_model.cc
-@@ -917,6 +917,24 @@ void OmniboxEditModel::OpenCurrentSelect
+@@ -1008,6 +1008,24 @@ void OmniboxEditModel::OpenCurrentSelect
    OpenSelection(popup_selection_, timestamp, disposition, via_keyboard);
  }
  
@@ -858,7 +861,7 @@
  void OmniboxEditModel::AcceptKeyword(
      OmniboxEventProto::KeywordModeEntryMethod entry_method) {
    TRACE_EVENT0("omnibox", "OmniboxEditModel::AcceptKeyword");
-@@ -925,6 +943,17 @@ void OmniboxEditModel::AcceptKeyword(
+@@ -1016,6 +1034,17 @@ void OmniboxEditModel::AcceptKeyword(
  
    controller_->StopAutocomplete(/*clear_result=*/false);
  
@@ -873,10 +876,10 @@
 +    }
 +  }
 +
-   SetIsKeywordHint(false);
-   keyword_mode_entry_method_ = entry_method;
+   SetKeywordInfo(KeywordState::kKeyword, keyword_, keyword_placeholder_,
+                  entry_method);
    if (original_user_text_with_keyword_.empty()) {
-@@ -967,9 +996,6 @@ void OmniboxEditModel::AcceptKeyword(
+@@ -1058,9 +1087,6 @@ void OmniboxEditModel::AcceptKeyword(
    }
  
    base::RecordAction(base::UserMetricsAction("AcceptedKeywordHint"));
@@ -886,12 +889,12 @@
    EmitEnteredKeywordModeHistogram(entry_method, turl, !user_text_.empty());
  }
  
-@@ -2968,6 +2994,21 @@ bool OmniboxEditModel::AllowKeywordSpace
+@@ -2994,6 +3020,21 @@ bool OmniboxEditModel::AllowKeywordSpace
    return GetPrefService()->GetBoolean(omnibox::kKeywordSpaceTriggeringEnabled);
  }
  
 +bool OmniboxEditModel::HasTrailingBangKeyword() const {
-+  if (!is_keyword_hint_ || input_.InKeywordMode()
++  if (!is_keyword_hint() || input_.in_keyword_mode()
 +      || !keyword_.starts_with('!')
 +      || !AutocompleteMatch::IsSearchType(current_match_.type)
 +      || !GetText().ends_with(keyword_)) {
@@ -908,7 +911,7 @@
  bool OmniboxEditModel::ShouldAcceptKeywordAfterInsertingSpaceAtEnd(
      const std::u16string& new_text) {
    // Check if the user has disabled space triggering.
-@@ -2991,16 +3032,20 @@ bool OmniboxEditModel::ShouldAcceptKeywo
+@@ -3017,16 +3058,20 @@ bool OmniboxEditModel::ShouldAcceptKeywo
      return false;
    }
  
@@ -938,8 +941,8 @@
  
 --- a/chrome/browser/ui/views/omnibox/omnibox_view_views.cc
 +++ b/chrome/browser/ui/views/omnibox/omnibox_view_views.cc
-@@ -2090,6 +2090,7 @@ bool OmniboxViewViews::HandleKeyEvent(vi
-                                     metric_value);
+@@ -1916,6 +1916,7 @@ bool OmniboxViewViews::HandleKeyEvent(vi
+               shift, control, alt, command);
        if (controller()->IsPopupOpen() && !control) {
          // Normal case of pressing <return> when the popup is open.
 +        controller()->edit_model()->MaybeAcceptTrailingBang();

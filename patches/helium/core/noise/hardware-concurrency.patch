@@ -1,29 +1,31 @@
 --- a/chrome/browser/helium_flag_choices.h
 +++ b/chrome/browser/helium_flag_choices.h
-@@ -31,6 +31,8 @@ namespace helium {
-   constexpr const char kHeliumNoiseCommandLine[] = "helium-noise";
-   constexpr const char kHeliumNoiseCanvasCommandLine[] = "helium-noise-canvas";
-   constexpr const char kHeliumNoiseAudioCommandLine[] = "helium-noise-audio";
-+  constexpr const char kHeliumNoiseCpuCoresCommandLine[] =
-+      "helium-noise-hw-concurrency";
+@@ -35,6 +35,8 @@ constexpr const char kMiddleClickAutoscr
+ constexpr const char kHeliumNoiseCommandLine[] = "helium-noise";
+ constexpr const char kHeliumNoiseCanvasCommandLine[] = "helium-noise-canvas";
+ constexpr const char kHeliumNoiseAudioCommandLine[] = "helium-noise-audio";
++constexpr const char kHeliumNoiseCpuCoresCommandLine[] =
++    "helium-noise-hw-concurrency";
  
  }  // namespace helium
  
 --- a/chrome/browser/helium_flag_entries.h
 +++ b/chrome/browser/helium_flag_entries.h
-@@ -28,4 +28,9 @@
-      "[Helium Noise] Jitter audio context data",
-      "Adds insignificant jitter to audio data to deceive AudioContext-based fingerprinting. Helium flag.",
+@@ -43,6 +43,11 @@
+      "Adds insignificant jitter to audio data to deceive AudioContext-based "
+      "fingerprinting. Helium flag.",
       kOsAll, FEATURE_VALUE_TYPE(blink::features::kHeliumNoiseAudio)},
 +    {helium::kHeliumNoiseCpuCoresCommandLine,
 +     "[Helium Noise] Randomize number of CPU cores",
 +     "Randomizes the number of cores returned by "
 +     "`navigator.hardwareConcurrency` in a reasonable range. Helium flag.",
 +     kOsAll, FEATURE_VALUE_TYPE(blink::features::kHeliumNoiseCpuCores)},
- #endif  /* CHROME_BROWSER_HELIUM_FLAG_ENTRIES_H_ */
+     // core/network
+     // ui
+     // platform
 --- a/content/browser/helium_noise/noise_token_data.cc
 +++ b/content/browser/helium_noise/noise_token_data.cc
-@@ -65,6 +65,8 @@ HeliumNoiseTokenData::HeliumNoiseTokenDa
+@@ -59,6 +59,8 @@ HeliumNoiseTokenData::HeliumNoiseTokenDa
        blink::HeliumNoiseToken(base::RandUint64());
    session_tokens_[blink::HeliumNoiseFeature::kAudio] =
        blink::HeliumNoiseToken(base::RandUint64());
@@ -34,7 +36,7 @@
  // static
 --- a/third_party/blink/common/features.cc
 +++ b/third_party/blink/common/features.cc
-@@ -51,6 +51,9 @@ BASE_FEATURE(kHeliumNoiseCanvas,
+@@ -60,6 +60,9 @@ BASE_FEATURE(kHeliumNoiseCanvas,
  BASE_FEATURE(kHeliumNoiseAudio,
               base::FEATURE_ENABLED_BY_DEFAULT);
  
@@ -46,7 +48,7 @@
  BASE_FEATURE(kAIPageContentIncludePopupWindows,
 --- a/third_party/blink/public/common/features.h
 +++ b/third_party/blink/public/common/features.h
-@@ -43,6 +43,7 @@ BLINK_COMMON_EXPORT extern const base::F
+@@ -45,6 +45,7 @@ BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE
  BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kHeliumNoise);
  BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kHeliumNoiseCanvas);
  BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kHeliumNoiseAudio);
@@ -131,7 +133,7 @@
 +  token_hash.Update(n);
 +
 +  auto values = PossibleValuesForCoreCount(n);
-+  return values[token_hash.GetValueBelow(values.size())];
++  return values[token_hash.GetValueBelow(static_cast<int>(values.size()))];
 +}
 +
  }  // namespace
@@ -148,7 +150,7 @@
  ExecutionContext* NavigatorBase::GetUAExecutionContext() const {
 --- a/third_party/blink/public/common/helium_noise/noise_token_mojom_traits.h
 +++ b/third_party/blink/public/common/helium_noise/noise_token_mojom_traits.h
-@@ -27,6 +27,8 @@ struct BLINK_COMMON_EXPORT
+@@ -30,6 +30,8 @@ struct BLINK_COMMON_EXPORT
          return blink::mojom::HeliumNoiseFeature::kCanvas;
        case blink::HeliumNoiseFeature::kAudio:
          return blink::mojom::HeliumNoiseFeature::kAudio;
@@ -157,13 +159,12 @@
      }
      NOTREACHED();
    }
-@@ -40,6 +42,9 @@ struct BLINK_COMMON_EXPORT
+@@ -41,6 +43,8 @@ struct BLINK_COMMON_EXPORT
+         return blink::HeliumNoiseFeature::kCanvas;
        case blink::mojom::HeliumNoiseFeature::kAudio:
-         *out = blink::HeliumNoiseFeature::kAudio;
-         return true;
+         return blink::HeliumNoiseFeature::kAudio;
 +      case blink::mojom::HeliumNoiseFeature::kHardware:
-+        *out = blink::HeliumNoiseFeature::kHardware;
-+        return true;
++        return blink::HeliumNoiseFeature::kHardware;
      }
-     return false;
-   }
+ 
+     NOTREACHED();

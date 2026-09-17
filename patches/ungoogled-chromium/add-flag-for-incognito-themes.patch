@@ -1,14 +1,13 @@
 --- a/chrome/browser/ui/views/frame/browser_widget.cc
 +++ b/chrome/browser/ui/views/frame/browser_widget.cc
-@@ -609,6 +609,8 @@ bool BrowserWidget::RegenerateFrameOnThe
+@@ -589,5 +589,7 @@ bool BrowserWidget::RegenerateFrameOnThe
  }
  
  bool BrowserWidget::IsIncognitoBrowser() const {
 +  if (base::CommandLine::ForCurrentProcess()->HasSwitch("enable-incognito-themes"))
 +    return false;
-   return browser_view_->browser()->profile()->IsIncognitoProfile();
+   return browser_view_->browser()->GetProfile()->IsIncognitoProfile();
  }
- 
 --- a/chrome/browser/ui/webui/ntp/ntp_resource_cache.cc
 +++ b/chrome/browser/ui/webui/ntp/ntp_resource_cache.cc
 @@ -48,6 +48,7 @@
@@ -19,7 +18,7 @@
  #include "ui/gfx/color_utils.h"
  #include "ui/native_theme/native_theme.h"
  
-@@ -371,7 +372,9 @@ void NTPResourceCache::CreateNewTabIncog
+@@ -417,7 +418,9 @@ void NTPResourceCache::CreateNewTabIncog
        profile_->GetPrefs()->GetString(prefs::kCurrentThemeID);
  
    // Colors.

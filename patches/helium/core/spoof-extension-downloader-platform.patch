@@ -17,21 +17,21 @@
  
 -#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 +#if true
- const char kChrome[] = "chrome";
- const char kCrx[] = "chromecrx";
- const char kWebView[] = "googleandroidwebview";
+ constexpr char kChrome[] = "chrome";
+ constexpr char kCrx[] = "chromecrx";
+ constexpr char kWebView[] = "googleandroidwebview";
 @@ -86,6 +86,10 @@ UpdateQueryParamsDelegate* g_delegate =
  
  // static
  std::string UpdateQueryParams::Get(ProdId prod) {
 +  if (prod == CRX_DUMMY) {
-+    return "os=win&arch=x64&os_arch=x86_64&nacl_arch=x86-64&prod=chromecrx&acceptformat=crx3,puff";
++    return "os=win&arch=x64&prod=chromecrx&acceptformat=crx3,puff";
 +  }
 +
-   return base::StringPrintf(
-       "os=%s&arch=%s&os_arch=%s&prod=%s%s&acceptformat=crx3,puff", kOs, kArch,
-       base::SysInfo().OperatingSystemArchitecture().c_str(),
-@@ -99,6 +103,7 @@ const char* UpdateQueryParams::GetProdId
+   return absl::StrFormat("os=%s&arch=%s&prod=%s%s&acceptformat=crx3,puff", kOs,
+                          kArch, GetProdIdString(prod),
+                          g_delegate ? g_delegate->GetExtraParams() : "");
+@@ -97,6 +101,7 @@ const char* UpdateQueryParams::GetProdId
      case UpdateQueryParams::CHROME:
        return kChrome;
      case UpdateQueryParams::CRX:
@@ -50,9 +50,9 @@
    base::CommandLine* command_line =
        base::CommandLine::ForCurrentProcess();
    if (command_line->HasSwitch(extensions::kSwitchTestRequestParam)) {
---- a/chrome/browser/extensions/webstore_installer.cc
-+++ b/chrome/browser/extensions/webstore_installer.cc
-@@ -213,7 +213,7 @@ GURL WebstoreInstaller::GetWebstoreInsta
+--- a/extensions/browser/webstore_installer.cc
++++ b/extensions/browser/webstore_installer.cc
+@@ -197,7 +197,7 @@ GURL WebstoreInstaller::GetWebstoreInsta
    GURL url(
        url_string + "?response=redirect&" +
        update_client::UpdateQueryParams::Get(

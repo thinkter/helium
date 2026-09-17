@@ -1,49 +1,53 @@
 --- a/chrome/app/settings_strings.grdp
 +++ b/chrome/app/settings_strings.grdp
-@@ -1950,6 +1950,40 @@
-   <message name="IDS_SETTINGS_SECURITY_DESCRIPTION" desc="Description of the controls available on the security settings page">
-     Safe Browsing (protection from dangerous sites) and other security settings
-   </message>
-+  <message name="IDS_SETTINGS_HELIUM_SERVICES" desc="Name of the page which controls connectivity to Helium services">
-+    Helium services
-+  </message>
-+  <message name="IDS_SETTINGS_HELIUM_SERVICES_DESCRIPTION" desc="Description of the controls available on the Helium services settings page">
-+    Manage what Helium services are allowed in your browser
-+  </message>
-+  <message name="IDS_SETTINGS_HELIUM_SCHEMA_NOTICE_TITLE" desc="Title of the alert shown when Helium services have a change in behavior">
-+    Updates to Helium services:
-+  </message>
-+  <message name="IDS_SETTINGS_HELIUM_SCHEMA_NOTICE_DESCRIPTION" desc="Description of the alert shown when Helium services have a change in behavior">
-+    These changes are not active until you dismiss this notice.
-+  </message>
-+  <message name="IDS_SETTINGS_HELIUM_SCHEMA_IGNORE" desc="Checkbox label to ignore any future services change alerts">
-+    Don't notify me again
-+  </message>
-+  <message name="IDS_SETTINGS_HELIUM_SERVICES_TOGGLE" desc="Global toggle for enabling/disabling of all Helium services">
-+    Allow connecting to Helium services
-+  </message>
-+  <message name="IDS_SETTINGS_HELIUM_SERVICES_TOGGLE_DESCRIPTION" desc="Description of the toggle for enabling/disabling of all Helium services">
-+    When enabled, Helium will be able to connect to anonymous web services to provide additional functionality. When disabled, additional features will not work.
-+  </message>
-+  <message name="IDS_SETTINGS_HELIUM_SERVICES_OVERRIDE" desc="Text input for overriding the Helium services server">
-+    Use your own instance of Helium services
-+  </message>
-+  <message name="IDS_SETTINGS_HELIUM_SERVICES_OVERRIDE_DESCRIPTION" desc="Description of the text input for overriding the Helium services server">
-+    You can host your own instance of Helium services and use it in your browser instead of the default one. HTTPS only.
-+  </message>
-+  <message name="IDS_SETTINGS_HELIUM_SERVICES_OVERRIDE_DESCRIPTION_WARNING" desc="Warning section of description for overriding the Helium services server">
-+    Do not use this field unless you know exactly what you are doing. Never paste URLs from other people here, they are trying to steal your data. We are not responsible for any damages caused by using a custom server and will not be able to help you.
-+  </message>
-+  <message name="IDS_SETTINGS_HELIUM_SERVICES_OVERRIDE_ARIA_LABEL" desc="ARIA label of the text input for overriding the Helium services server">
-+    Custom origin URL for Helium services
-+  </message>
+@@ -1553,6 +1553,44 @@
+       </message>
+     </if>
+ 
++    <!-- Helium Services Privacy Settings (helium://settings/privacy/services) -->
++    <message name="IDS_SETTINGS_HELIUM_SERVICES" desc="Name of the page which controls connectivity to Helium services">
++      Helium services
++    </message>
++    <message name="IDS_SETTINGS_HELIUM_SERVICES_DESCRIPTION" desc="Description of the controls available on the Helium services settings page">
++      Manage what Helium services are allowed in your browser
++    </message>
++    <message name="IDS_SETTINGS_HELIUM_SCHEMA_NOTICE_TITLE" desc="Title of the alert shown when Helium services have a change in behavior">
++      Updates to Helium services:
++    </message>
++    <message name="IDS_SETTINGS_HELIUM_SCHEMA_NOTICE_DESCRIPTION" desc="Description of the alert shown when Helium services have a change in behavior">
++      These changes are not active until you dismiss this notice.
++    </message>
++    <message name="IDS_SETTINGS_HELIUM_SCHEMA_IGNORE" desc="Checkbox label to ignore any future services change alerts">
++      Don't notify me again
++    </message>
++    <message name="IDS_SETTINGS_HELIUM_SERVICES_TOGGLE" desc="Global toggle for enabling/disabling of all Helium services">
++      Allow connecting to Helium services
++    </message>
++    <message name="IDS_SETTINGS_HELIUM_SERVICES_TOGGLE_DESCRIPTION" desc="Description of the toggle for enabling/disabling of all Helium services">
++      When enabled, Helium will be able to connect to anonymous web services to provide additional functionality. When disabled, additional features will not work.
++    </message>
++    <message name="IDS_SETTINGS_HELIUM_SERVICES_OVERRIDE" desc="Text input for overriding the Helium services server">
++      Use your own instance of Helium services
++    </message>
++    <message name="IDS_SETTINGS_HELIUM_SERVICES_OVERRIDE_DESCRIPTION" desc="Description of the text input for overriding the Helium services server">
++      You can host your own instance of Helium services and use it in your browser instead of the default one. HTTPS only.
++    </message>
++    <message name="IDS_SETTINGS_HELIUM_SERVICES_OVERRIDE_DESCRIPTION_WARNING" desc="Warning section of description for overriding the Helium services server">
++      Do not use this field unless you know exactly what you are doing. Never paste URLs from other people here, they are trying to steal your data. We are not responsible for any damages caused by using a custom server and will not be able to help you.
++    </message>
++    <message name="IDS_SETTINGS_HELIUM_SERVICES_OVERRIDE_ARIA_LABEL" desc="ARIA label of the text input for overriding the Helium services server">
++      Custom origin URL for Helium services
++    </message>
++    <message name="IDS_SETTINGS_HELIUM_SERVICES_OVERRIDE_INVALID_ORIGIN" desc="Validation error shown when the custom Helium services origin is invalid.">
++      Invalid origin
++    </message>
 +
-   <message name="IDS_SETTINGS_ADVANCED_PROTECTION_PROGRAM" desc="Name of the link which takes users
-     to the Google Advanced Protection Program external webpage">
-     Google Advanced Protection Program
+     <!-- Safety check -->
+     <message name="IDS_SETTINGS_SAFETY_CHECK_REVIEW" desc="Text for a button that allows users to review safety check findings, such as compromised passwords or blocklisted extensions.">
+       Review
 --- a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
 +++ b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
-@@ -2228,6 +2228,23 @@ void AddPrivacyStrings(content::WebUIDat
+@@ -2505,6 +2505,25 @@ void AddPrivacyStrings(content::WebUIDat
        {"siteSettingsSublabel", IDS_SETTINGS_PERMISSIONS_DESCRIPTION},
        {"securityPageTitle", IDS_SETTINGS_SECURITY},
        {"securityPageDescription", IDS_SETTINGS_SECURITY_DESCRIPTION},
@@ -64,12 +68,14 @@
 +        IDS_SETTINGS_HELIUM_SERVICES_OVERRIDE_DESCRIPTION_WARNING},
 +      {"heliumOriginOverrideLabel",
 +        IDS_SETTINGS_HELIUM_SERVICES_OVERRIDE_ARIA_LABEL},
++      {"heliumOriginOverrideInvalidOrigin",
++        IDS_SETTINGS_HELIUM_SERVICES_OVERRIDE_INVALID_ORIGIN},
        {"advancedProtectionProgramTitle",
         IDS_SETTINGS_ADVANCED_PROTECTION_PROGRAM},
        {"advancedProtectionProgramDesc",
 --- a/chrome/browser/resources/settings/privacy_page/privacy_page.html
 +++ b/chrome/browser/resources/settings/privacy_page/privacy_page.html
-@@ -49,6 +49,11 @@
+@@ -34,6 +34,11 @@
          sub-label="$i18n{siteSettingsSublabel}"
          on-click="onSiteSettingsLinkRowClick_"
          role-description="$i18n{subpageArrowRoleDescription}"></cr-link-row>
@@ -95,12 +101,12 @@
 +    </settings-helium-services-page>
 +  </template>
 +
-   <template is="dom-if" if="[[isAdPrivacyAvailable_]]" restamp>
-     <template is="dom-if" if="[[renderView_(
-         routes_.PRIVACY_SANDBOX, currentRoute, inSearchMode)]]"
+   <!-- Keep entries below sorted based on the route name. -->
+ 
+   <template is="dom-if" if="[[renderView_(
 --- a/chrome/browser/resources/settings/privacy_page/privacy_page.ts
 +++ b/chrome/browser/resources/settings/privacy_page/privacy_page.ts
-@@ -159,6 +159,12 @@ export class SettingsPrivacyPageElement
+@@ -145,6 +145,12 @@ export class SettingsPrivacyPageElement
      Router.getInstance().navigateTo(routes.SITE_SETTINGS);
    }
  
@@ -113,7 +119,7 @@
    private onSecurityPageClick_() {
      this.interactedWithPage_();
      this.metricsBrowserProxy_.recordAction(
-@@ -226,6 +232,10 @@ export class SettingsPrivacyPageElement
+@@ -191,6 +197,10 @@ export class SettingsPrivacyPageElement
    override getFocusConfig() {
      const map = new Map();
  
@@ -124,7 +130,7 @@
      if (routes.COOKIES) {
        map.set(routes.COOKIES.path, '#thirdPartyCookiesLinkRow');
      }
-@@ -253,6 +263,9 @@ export class SettingsPrivacyPageElement
+@@ -214,6 +224,9 @@ export class SettingsPrivacyPageElement
    override getAssociatedControlFor(childViewId: string): HTMLElement {
      let triggerId: string|null = null;
      switch (childViewId) {
@@ -136,14 +142,14 @@
          break;
 --- a/chrome/browser/resources/settings/router.ts
 +++ b/chrome/browser/resources/settings/router.ts
-@@ -32,6 +32,7 @@ export interface SettingsRoutes {
-   FONTS: Route;
+@@ -37,6 +37,7 @@ export interface SettingsRoutes {
    GEMINI: Route;
+   GEMINI_LOGIN: Route;
    GLIC_SECTION: Route;
 +  HELIUM_SERVICES: Route;
    HISTORY_SEARCH: Route;
-   LANGUAGES: Route;
-   MANAGE_PROFILE: Route;
+   IDENTITY_DOCS: Route;
+   INLINE_CUE_MENU: Route;
 --- a/chrome/browser/resources/settings/route.ts
 +++ b/chrome/browser/resources/settings/route.ts
 @@ -18,6 +18,8 @@ function addPrivacyChildRoutes(r: Partia
@@ -157,22 +163,22 @@
    if (visibility.safetyHub !== false) {
 --- a/chrome/browser/resources/settings/BUILD.gn
 +++ b/chrome/browser/resources/settings/BUILD.gn
-@@ -154,6 +154,7 @@ build_webui("build") {
+@@ -137,6 +137,7 @@ build_webui("build") {
      "privacy_page/security/security_page.ts",
      "privacy_page/security/security_page_feature_row.ts",
      "privacy_page/security/security_page_v2.ts",
 +    "privacy_page/services_page.ts",
-     "privacy_sandbox/privacy_sandbox_ad_measurement_subpage.ts",
-     "privacy_sandbox/privacy_sandbox_fledge_subpage.ts",
-     "privacy_sandbox/privacy_sandbox_interest_item.ts",
-@@ -385,6 +386,7 @@ build_webui("build") {
-       "languages_page/languages_util.ts",
-       "people_page/import_data_browser_proxy.ts",
-       "people_page/manage_profile_browser_proxy.ts",
-+      "privacy_page/changelog_proxy.ts",
-       "system_page/system_page_browser_proxy.ts",
-     ]
-     if (is_chrome_branded) {
+     "safety_hub/extensions_module.ts",
+     "safety_hub/notification_permissions_module.ts",
+     "safety_hub/safety_hub_card.ts",
+@@ -346,6 +347,7 @@ build_webui("build") {
+     "performance_page/tab_discard/exception_validation_mixin.ts",
+     "people_page/sync_controls_page.html.ts",
+     "people_page/sync_controls_page.ts",
++    "privacy_page/changelog_proxy.ts",
+     "privacy_page/hats_browser_proxy.ts",
+     "privacy_page/privacy_guide/constants.ts",
+     "privacy_page/privacy_guide/privacy_guide_availability_mixin.ts",
 --- /dev/null
 +++ b/chrome/browser/resources/settings/privacy_page/services_page.html
 @@ -0,0 +1,89 @@
@@ -259,7 +265,7 @@
 +        maxlength="128"
 +        aria-label="$i18n{heliumOriginOverrideLabel}"
 +        auto-validate
-+        error-message="Invalid origin"
++        error-message="$i18n{heliumOriginOverrideInvalidOrigin}"
 +        spellcheck="false">
 +    </cr-input>
 +  </div>
@@ -375,25 +381,25 @@
 +customElements.define(SettingsHeliumServicesPageElement.is, SettingsHeliumServicesPageElement);
 --- a/chrome/browser/resources/settings/lazy_load.ts
 +++ b/chrome/browser/resources/settings/lazy_load.ts
-@@ -25,6 +25,7 @@ import './privacy_page/privacy_guide/pri
+@@ -32,6 +32,7 @@ import './privacy_page/privacy_guide/pri
  import './privacy_page/security/security_keys_subpage.js';
  import './privacy_page/security/security_page_v2.js';
  import './privacy_page/security/security_page.js';
 +import './privacy_page/services_page.js';
- import './privacy_sandbox/privacy_sandbox_ad_measurement_subpage.js';
- import './privacy_sandbox/privacy_sandbox_fledge_subpage.js';
- import './privacy_sandbox/privacy_sandbox_interest_item.js';
-@@ -266,6 +267,7 @@ export {SecurityKeysSubpageElement} from
+ import './safety_hub/safety_hub_entry_point.js';
+ import './safety_hub/safety_hub_page.js';
+ import './search_page/search_engines_page.js';
+@@ -282,6 +283,7 @@ export {SecurityKeysSubpageElement} from
  export {HttpsFirstModeSetting, SettingsSecurityPageElement} from './privacy_page/security/security_page.js';
  export {SecurityPageFeatureRowElement} from './privacy_page/security/security_page_feature_row.js';
  export {SecuritySettingsBundleSetting, SettingsSecurityPageV2Element} from './privacy_page/security/security_page_v2.js';
 +export {SettingsHeliumServicesPageElement} from './privacy_page/services_page.js';
- export {SettingsPrivacySandboxAdMeasurementSubpageElement} from './privacy_sandbox/privacy_sandbox_ad_measurement_subpage.js';
- export {SettingsPrivacySandboxFledgeSubpageElement} from './privacy_sandbox/privacy_sandbox_fledge_subpage.js';
- export {PrivacySandboxInterestItemElement} from './privacy_sandbox/privacy_sandbox_interest_item.js';
+ export {SettingsResetPageElement} from './reset_page/reset_page.js';
+ export {SettingsResetProfileDialogElement} from './reset_page/reset_profile_dialog.js';
+ export {SettingsSafetyHubExtensionsModuleElement} from './safety_hub/extensions_module.js';
 --- a/chrome/browser/ui/browser_ui_prefs.cc
 +++ b/chrome/browser/ui/browser_ui_prefs.cc
-@@ -14,6 +14,7 @@
+@@ -15,6 +15,7 @@
  #include "chrome/browser/upgrade_detector/upgrade_detector.h"
  #include "chrome/common/buildflags.h"
  #include "chrome/common/pref_names.h"
@@ -401,7 +407,7 @@
  #include "components/policy/core/common/policy_pref_names.h"
  #include "components/pref_registry/pref_registry_syncable.h"
  #include "components/prefs/pref_registry_simple.h"
-@@ -212,6 +213,13 @@ void RegisterBrowserUserPrefs(user_prefs
+@@ -220,6 +221,13 @@ void RegisterBrowserUserPrefs(user_prefs
                                  false);
  #endif
  
@@ -417,7 +423,7 @@
        user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
 --- a/chrome/browser/extensions/api/settings_private/prefs_util.cc
 +++ b/chrome/browser/extensions/api/settings_private/prefs_util.cc
-@@ -45,6 +45,7 @@
+@@ -49,6 +49,7 @@
  #include "components/dom_distiller/core/pref_names.h"
  #include "components/drive/drive_pref_names.h"
  #include "components/embedder_support/pref_names.h"
@@ -425,7 +431,7 @@
  #include "components/language/core/browser/pref_names.h"
  #include "components/live_caption/pref_names.h"
  #include "components/media_router/common/pref_names.h"
-@@ -390,6 +391,12 @@ const PrefsUtil::TypedPrefMap& PrefsUtil
+@@ -437,6 +438,12 @@ const PrefsUtil::TypedPrefMap& PrefsUtil
        settings_api::PrefType::kString;
  #endif
  
@@ -619,7 +625,7 @@
 +export class HeliumServicesChangeHandlerImpl implements
 +    HeliumServicesChangeHandler {
 +  requestChangelog() {
-+    return sendWithPromise('getServicesSchemaChangelog');
++    return sendWithPromise<string[]>('getServicesSchemaChangelog');
 +  }
 +
 +  acknowledgeChanges(ignoreAllChangelogs: boolean) {
@@ -751,17 +757,24 @@
 +}  // namespace helium
 +
 +#endif  // COMPONENTS_HELIUM_SERVICES_SCHEMA_H_
---- a/chrome/browser/ui/BUILD.gn
-+++ b/chrome/browser/ui/BUILD.gn
-@@ -1322,6 +1322,8 @@ static_library("ui") {
-       "webui/settings/search_engines_handler.h",
-       "webui/settings/security_settings_provider.cc",
-       "webui/settings/security_settings_provider.h",
-+      "webui/settings/services_schema_handler.cc",
-+      "webui/settings/services_schema_handler.h",
-       "webui/settings/settings_clear_browsing_data_handler.cc",
-       "webui/settings/settings_clear_browsing_data_handler.h",
-       "webui/settings/settings_localized_strings_privacy_sandbox_provider.cc",
+--- a/chrome/browser/ui/webui/settings/BUILD.gn
++++ b/chrome/browser/ui/webui/settings/BUILD.gn
+@@ -38,6 +38,7 @@ source_set("settings") {
+     "saved_info_handler.h",
+     "search_engines_handler.h",
+     "security_settings_provider.h",
++    "services_schema_handler.h",
+     "settings_clear_browsing_data_handler.h",
+     "settings_localized_strings_provider.h",
+     "settings_media_devices_selection_handler.h",
+@@ -166,6 +167,7 @@ source_set("impl") {
+     "saved_info_handler.cc",
+     "search_engines_handler.cc",
+     "security_settings_provider.cc",
++    "services_schema_handler.cc",
+     "settings_clear_browsing_data_handler.cc",
+     "settings_localized_strings_privacy_sandbox_provider.cc",
+     "settings_localized_strings_provider.cc",
 --- /dev/null
 +++ b/chrome/browser/ui/webui/settings/services_schema_handler.cc
 @@ -0,0 +1,58 @@
@@ -825,7 +838,7 @@
 +}
 --- a/chrome/browser/ui/webui/settings/settings_ui.cc
 +++ b/chrome/browser/ui/webui/settings/settings_ui.cc
-@@ -82,6 +82,7 @@
+@@ -84,6 +84,7 @@
  #include "chrome/browser/ui/webui/settings/saved_info_handler.h"
  #include "chrome/browser/ui/webui/settings/search_engines_handler.h"
  #include "chrome/browser/ui/webui/settings/security_settings_provider.h"
@@ -833,9 +846,9 @@
  #include "chrome/browser/ui/webui/settings/settings_clear_browsing_data_handler.h"
  #include "chrome/browser/ui/webui/settings/settings_localized_strings_provider.h"
  #include "chrome/browser/ui/webui/settings/settings_media_devices_selection_handler.h"
-@@ -266,6 +267,8 @@ SettingsUI::SettingsUI(content::WebUI* w
+@@ -280,6 +281,8 @@ SettingsUI::SettingsUI(content::WebUI* w
+   AddSettingsPageUIHandler(std::make_unique<ProfileInfoHandler>(profile));
    AddSettingsPageUIHandler(std::make_unique<ProtocolHandlersHandler>(profile));
-   AddSettingsPageUIHandler(std::make_unique<PrivacySandboxHandler>());
    AddSettingsPageUIHandler(std::make_unique<SearchEnginesHandler>(profile));
 +  AddSettingsPageUIHandler(
 +      std::make_unique<HeliumServicesSchemaHandler>(profile));

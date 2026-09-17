@@ -1,33 +1,35 @@
 --- a/chrome/browser/ui/views/toolbar/toolbar_view.cc
 +++ b/chrome/browser/ui/views/toolbar/toolbar_view.cc
-@@ -1707,8 +1707,7 @@ AppMenuButton* ToolbarView::GetAppMenuBu
+@@ -1863,21 +1863,7 @@ const AppMenuControl* ToolbarView::GetAp
  }
  
  gfx::Rect ToolbarView::GetFindBarBoundingBox(int contents_bottom) {
--  if (!browser_->SupportsWindowFeature(
--          Browser::WindowFeature::kFeatureLocationBar)) {
-+  if ((true)) {
-     return gfx::Rect();
-   }
+-  if (!WindowFeatureController::From(browser_)->SupportsWindowFeature(
+-          WindowFeatureController::WindowFeature::kFeatureLocationBar)) {
+-    return gfx::Rect();
+-  }
+-
+-  CHECK(location_bar_);
+-
+-  if (!location_bar_->IsDrawn()) {
+-    return gfx::Rect();
+-  }
+-
+-  gfx::Rect bounds = views::View::ConvertRectFromScreen(
+-      GetWidget()->GetRootView(), location_bar_->BoundsInScreen());
+-  return gfx::Rect(bounds.x(), bounds.bottom(), bounds.width(),
+-                   contents_bottom - bounds.bottom());
++  return gfx::Rect();
+ }
  
---- a/chrome/browser/ui/views/location_bar/location_bar_view.cc
-+++ b/chrome/browser/ui/views/location_bar/location_bar_view.cc
-@@ -515,7 +515,6 @@ void LocationBarView::Init() {
-       params.types_enabled.push_back(PageActionIconType::kIntentPicker);
-     }
-     params.types_enabled.push_back(PageActionIconType::kPwaInstall);
--    params.types_enabled.push_back(PageActionIconType::kFind);
-     params.types_enabled.push_back(PageActionIconType::kTranslate);
-     params.types_enabled.push_back(PageActionIconType::kZoom);
-     params.types_enabled.push_back(PageActionIconType::kFileSystemAccess);
+ void ToolbarView::FocusToolbar() {
 --- a/chrome/browser/ui/find_bar/find_bar_controller.cc
 +++ b/chrome/browser/ui/find_bar/find_bar_controller.cc
-@@ -383,40 +383,4 @@ std::u16string FindBarController::GetSel
+@@ -387,42 +387,7 @@ std::u16string FindBarController::GetSel
    return selected_text;
  }
  
 -void FindBarController::UpdatePageAction() {
--  CHECK(IsPageActionMigrated(PageActionIconType::kFind));
 -  tabs::TabInterface* tab =
 -      tabs::TabInterface::MaybeGetFromContents(web_contents());
 -  // On ChromeOS it's possible that the active tab's contents are discarded.
@@ -64,9 +66,12 @@
 -  }
 -}
 +void FindBarController::UpdatePageAction() {}
+ 
+ void FindBarController::OnFindBarVisibilityChanged() {
+   UpdatePageAction();
 --- a/chrome/browser/ui/views/find_bar_host.cc
 +++ b/chrome/browser/ui/views/find_bar_host.cc
-@@ -666,11 +666,11 @@ gfx::Rect FindBarHost::GetDialogPosition
+@@ -654,11 +654,11 @@ gfx::Rect FindBarHost::GetDialogPosition
    // Place the view in the top right corner of the widget boundaries (top left
    // for RTL languages). Adjust for the view insets to ensure the border lines
    // up with the location bar.
@@ -125,7 +130,7 @@
            .AddChildren(
                views::Builder<views::Textfield>()
                    .CopyAddressTo(&find_text_)
-@@ -322,8 +321,7 @@ FindBarView::FindBarView(FindBarHost* ho
+@@ -343,8 +342,7 @@ FindBarView::FindBarView(FindBarHost* ho
      auto border = std::make_unique<views::BubbleBorder>(
          views::BubbleBorder::NONE, views::BubbleBorder::STANDARD_SHADOW);
      border->SetColor(kColorFindBarBackground);

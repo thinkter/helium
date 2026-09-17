@@ -1,6 +1,6 @@
 --- a/chrome/app/chrome_command_ids.h
 +++ b/chrome/app/chrome_command_ids.h
-@@ -95,15 +95,12 @@
+@@ -112,15 +112,12 @@
  
  // Helium commands
  #define IDC_COPY_OR_INSPECT_SHORTCUT    34080
@@ -24,8 +24,8 @@
  #define IDC_ADD_NEW_TAB_TO_GROUP      34100
 --- a/chrome/app/generated_resources.grd
 +++ b/chrome/app/generated_resources.grd
-@@ -10387,6 +10387,51 @@ Keep your key file in a safe place. You
-         Create split view
+@@ -10543,6 +10543,51 @@ Keep your key file in a safe place. You
+         Use the split view menu to switch between side by side and stacked layouts.
        </message>
  
 +      <!-- Helium Browser Layout Strings -->
@@ -86,49 +86,49 @@
  #include "chrome/browser/ui/tabs/tab_enums.h"
  #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
  #include "chrome/browser/ui/tabs/tab_strip_user_gesture_details.h"
-@@ -263,6 +264,8 @@ void ShowTabSearch(BrowserWindowInterfac
- void CloseTabSearch(Browser* browser);
- void ToggleContextualTasksSidePanel(BrowserWindowInterface* browser);
- void ToggleVerticalTabs(Browser* browser);
-+void SetBrowserLayout(Browser* browser, HeliumLayoutType layout);
-+void ToggleVerticalTabStripRightAligned(Browser* browser);
- bool CanCloseFind(Browser* browser);
- void CloseFind(Browser* browser);
- void Zoom(Browser* browser, content::PageZoom zoom);
+@@ -299,6 +300,8 @@ void ToggleContextualTasksSidePanelZeroS
+ void ToggleVerticalTabs(BrowserWindowInterface* browser);
+ void ToggleVerticalTabsExpandOnHover(BrowserWindowInterface* browser);
+ void ToggleCollapseVerticalTabs(BrowserWindowInterface* browser);
++void SetBrowserLayout(BrowserWindowInterface* browser, HeliumLayoutType layout);
++void ToggleVerticalTabStripRightAligned(BrowserWindowInterface* browser);
+ bool CanCloseFind(BrowserWindowInterface* browser);
+ void CloseFind(BrowserWindowInterface* browser);
+ void Zoom(BrowserWindowInterface* browser, content::PageZoom zoom);
 --- a/chrome/browser/ui/browser_commands.cc
 +++ b/chrome/browser/ui/browser_commands.cc
-@@ -79,6 +79,7 @@
- #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
+@@ -87,6 +87,7 @@
  #include "chrome/browser/ui/find_bar/find_bar.h"
  #include "chrome/browser/ui/find_bar/find_bar_controller.h"
+ #include "chrome/browser/ui/focus/browser_focus_controller.h"
 +#include "chrome/browser/ui/helium/helium_layout_state_controller.h"
  #include "chrome/browser/ui/intent_picker_tab_helper.h"
  #include "chrome/browser/ui/lens/lens_search_controller.h"
  #include "chrome/browser/ui/location_bar/location_bar.h"
-@@ -2220,6 +2221,20 @@ void ToggleVerticalTabs(Browser* browser
-   controller->SetVerticalTabsEnabled(!controller->ShouldDisplayVerticalTabs());
+@@ -2585,6 +2586,20 @@ void ToggleCollapseVerticalTabs(BrowserW
+   controller->RequestCollapse(collapse);
  }
  
-+void SetBrowserLayout(Browser* browser, HeliumLayoutType layout) {
++void SetBrowserLayout(BrowserWindowInterface* browser, HeliumLayoutType layout) {
 +  auto* controller = HeliumLayoutStateController::From(browser);
 +  if (controller) {
 +    controller->SetBrowserLayout(layout);
 +  }
 +}
 +
-+void ToggleVerticalTabStripRightAligned(Browser* browser) {
++void ToggleVerticalTabStripRightAligned(BrowserWindowInterface* browser) {
 +  auto* controller = tabs::VerticalTabStripStateController::From(browser);
 +  if (controller) {
 +    controller->SetTabStripRightAligned(!controller->IsTabStripRightAligned());
 +  }
 +}
 +
- bool CanCloseFind(Browser* browser) {
-   WebContents* current_tab = browser->tab_strip_model()->GetActiveWebContents();
-   if (!current_tab) {
+ bool CanCloseFind(BrowserWindowInterface* browser) {
+   WebContents* current_tab =
+       browser->GetTabStripModel()->GetActiveWebContents();
 --- a/chrome/browser/ui/browser_command_controller.cc
 +++ b/chrome/browser/ui/browser_command_controller.cc
-@@ -734,6 +734,21 @@ bool BrowserCommandController::ExecuteCo
+@@ -859,6 +859,21 @@ void BrowserCommandController::HandleCom
      case IDC_NAME_WINDOW:
        PromptToNameWindow(browser_);
        break;
@@ -150,25 +150,36 @@
  
  #if BUILDFLAG(IS_CHROMEOS)
      case IDC_TAKE_SCREENSHOT:
-@@ -1546,6 +1561,15 @@ void BrowserCommandController::InitComma
-   command_updater_.UpdateCommandEnabled(IDC_SHOW_SEARCH_TOOLS, true);
-   command_updater_.UpdateCommandEnabled(IDC_SHOW_AI_MODE_OMNIBOX_BUTTON, true);
+@@ -1766,6 +1781,15 @@ void BrowserCommandController::InitComma
+   command_updater_->UpdateCommandEnabled(IDC_SHOW_SEARCH_TOOLS, true);
+   command_updater_->UpdateCommandEnabled(IDC_SHOW_AI_MODE_OMNIBOX_BUTTON, true);
  
 +  // Helium layout menu
-+  command_updater_.UpdateCommandEnabled(IDC_BROWSER_LAYOUT_MENU, true);
-+  command_updater_.UpdateCommandEnabled(IDC_BROWSER_LAYOUT_CLASSIC, true);
-+  command_updater_.UpdateCommandEnabled(IDC_BROWSER_LAYOUT_DYNAMIC, true);
-+  command_updater_.UpdateCommandEnabled(IDC_BROWSER_LAYOUT_COMPACT, true);
-+  command_updater_.UpdateCommandEnabled(IDC_BROWSER_LAYOUT_VERTICAL, true);
-+  command_updater_.UpdateCommandEnabled(IDC_BROWSER_LAYOUT_VERTICAL_RIGHT,
-+                                        true);
++  command_updater_->UpdateCommandEnabled(IDC_BROWSER_LAYOUT_MENU, true);
++  command_updater_->UpdateCommandEnabled(IDC_BROWSER_LAYOUT_CLASSIC, true);
++  command_updater_->UpdateCommandEnabled(IDC_BROWSER_LAYOUT_DYNAMIC, true);
++  command_updater_->UpdateCommandEnabled(IDC_BROWSER_LAYOUT_COMPACT, true);
++  command_updater_->UpdateCommandEnabled(IDC_BROWSER_LAYOUT_VERTICAL, true);
++  command_updater_->UpdateCommandEnabled(IDC_BROWSER_LAYOUT_VERTICAL_RIGHT,
++                                         true);
 +
    // Window management commands
-   command_updater_.UpdateCommandEnabled(IDC_CLOSE_WINDOW, true);
-   command_updater_.UpdateCommandEnabled(
+   command_updater_->UpdateCommandEnabled(IDC_CLOSE_WINDOW, true);
+   command_updater_->UpdateCommandEnabled(IDC_NEW_TAB, true);
 --- a/chrome/browser/ui/views/frame/system_menu_model_builder.h
 +++ b/chrome/browser/ui/views/frame/system_menu_model_builder.h
-@@ -60,6 +60,7 @@ class SystemMenuModelBuilder {
+@@ -27,10 +27,6 @@ class SimpleMenuModel;
+ // model.
+ class SystemMenuModelBuilder {
+  public:
+-  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kToggleVerticalTabsElementId);
+-  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kToggleVerticalTabsCollapseElementId);
+-  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(
+-      kToggleVerticalTabsExpandOnHoverElementId);
+   SystemMenuModelBuilder(ui::AcceleratorProvider* provider,
+                          BrowserWindowInterface* browser);
+ 
+@@ -64,6 +60,7 @@ class SystemMenuModelBuilder {
    SystemMenuModelDelegate menu_delegate_;
    std::unique_ptr<ui::MenuModel> menu_model_;
    std::unique_ptr<ui::SimpleMenuModel> zoom_menu_contents_;
@@ -178,27 +189,35 @@
  #endif
 --- a/chrome/browser/ui/views/frame/system_menu_model_builder.cc
 +++ b/chrome/browser/ui/views/frame/system_menu_model_builder.cc
-@@ -14,7 +14,6 @@
- #include "chrome/browser/ui/browser_commands.h"
+@@ -16,9 +16,9 @@
+ #include "chrome/browser/ui/browser_element_identifiers.h"
  #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/helium/helium_layout_state_controller.h"
+ #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
  #include "chrome/browser/ui/tabs/features.h"
 -#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
  #include "chrome/browser/ui/toolbar/app_menu_model.h"
  #include "chrome/browser/ui/ui_features.h"
- #include "chrome/browser/ui/views/frame/immersive_mode_controller.h"
-@@ -51,9 +50,6 @@
- #include "ui/ozone/public/ozone_platform.h"
- #endif
+ #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+@@ -75,14 +75,6 @@ void AddItemWithIconMaybe(ui::SimpleMenu
+ 
+ }  // namespace
  
 -DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(SystemMenuModelBuilder,
 -                                      kToggleVerticalTabsElementId);
+-DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(SystemMenuModelBuilder,
+-                                      kToggleVerticalTabsCollapseElementId);
+-DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(
+-    SystemMenuModelBuilder,
+-    kToggleVerticalTabsExpandOnHoverElementId);
 -
  SystemMenuModelBuilder::SystemMenuModelBuilder(
      ui::AcceleratorProvider* provider,
-     Browser* browser)
-@@ -103,6 +99,26 @@ void SystemMenuModelBuilder::BuildSystem
+     BrowserWindowInterface* browser)
+@@ -164,6 +156,29 @@ void SystemMenuModelBuilder::BuildSystem
  
-   if (!browser()->profile()->IsOffTheRecord()) {
+   if (!browser()->GetProfile()->IsOffTheRecord()) {
      model->AddSeparator(ui::NORMAL_SEPARATOR);
 +
 +    browser_layout_menu_contents_ =
@@ -212,9 +231,12 @@
 +        IDC_BROWSER_LAYOUT_COMPACT, IDS_BROWSER_LAYOUT_COMPACT);
 +    browser_layout_menu_contents_->AddCheckItemWithStringId(
 +        IDC_BROWSER_LAYOUT_VERTICAL, IDS_BROWSER_LAYOUT_VERTICAL);
-+    browser_layout_menu_contents_->AddSeparator(ui::NORMAL_SEPARATOR);
-+    browser_layout_menu_contents_->AddCheckItemWithStringId(
-+        IDC_BROWSER_LAYOUT_VERTICAL_RIGHT, IDS_BROWSER_LAYOUT_VERTICAL_RIGHT);
++    auto* layout_controller = HeliumLayoutStateController::From(browser());
++    if (layout_controller && layout_controller->IsVerticalLayout()) {
++      browser_layout_menu_contents_->AddSeparator(ui::NORMAL_SEPARATOR);
++      browser_layout_menu_contents_->AddCheckItemWithStringId(
++          IDC_BROWSER_LAYOUT_VERTICAL_RIGHT, IDS_BROWSER_LAYOUT_VERTICAL_RIGHT);
++    }
 +
 +    model->AddSubMenuWithStringId(IDC_BROWSER_LAYOUT_MENU,
 +                                  IDS_BROWSER_LAYOUT_MENU,
@@ -223,43 +245,63 @@
      model->AddItemWithStringId(IDC_SHOW_CUSTOMIZE_CHROME_SIDE_PANEL,
                                 IDS_SHOW_CUSTOMIZE_CHROME_SIDE_PANEL);
    }
-@@ -118,41 +134,6 @@ void SystemMenuModelBuilder::BuildSystem
+@@ -182,61 +197,6 @@ void SystemMenuModelBuilder::BuildSystem
    }
  #endif  // BUILDFLAG(IS_WIN)
  
 -  if (auto* controller =
 -          tabs::VerticalTabStripStateController::From(browser())) {
--    // TODO(crbug.com/475222200): When in immersive, swapping between tab
--    // strip types create duplicate tab strips. Until that is resolved, disable
--    // the ability to swap between tab strips while in immersive.
--    if (!ImmersiveModeController::From(browser())->IsEnabled()) {
--      model->AddSeparator(ui::NORMAL_SEPARATOR);
--      if (controller->ShouldDisplayVerticalTabs()) {
--        model->AddItemWithStringId(IDC_TOGGLE_VERTICAL_TABS,
--                                   IDS_SWITCH_TO_HORIZONTAL_TAB);
--      } else {
--        model->AddItemWithStringId(IDC_TOGGLE_VERTICAL_TABS,
--                                   IDS_SWITCH_TO_VERTICAL_TAB);
--        const bool use_preview_badge =
--            base::FeatureList::IsEnabled(tabs::kVerticalTabsPreviewBadge);
--        const ui::NewBadgeType badge_type = use_preview_badge
--                                                ? ui::NewBadgeType::kPreview
--                                                : ui::NewBadgeType::kNew;
--        const user_education::DisplayNewBadge show_badge =
--            UserEducationService::MaybeShowNewBadge(
--                browser()->GetProfile(), use_preview_badge
--                                             ? tabs::kVerticalTabsPreviewBadge
--                                             : tabs::kVerticalTabsNewBadge);
--        model->SetIsNewFeatureAt(
--            model->GetIndexOfCommandId(IDC_TOGGLE_VERTICAL_TABS).value(),
--            show_badge, badge_type);
--      }
+-    model->AddSeparator(ui::NORMAL_SEPARATOR);
+-
+-    if (controller->ShouldDisplayVerticalTabs()) {
+-      model->AddItemWithStringId(IDC_TOGGLE_VERTICAL_TABS,
+-                                 IDS_SWITCH_TO_HORIZONTAL_TAB);
+-
+-      model->AddItemWithStringId(IDC_TOGGLE_VERTICAL_TABS_COLLAPSE,
+-                                 controller->IsCollapsed()
+-                                     ? IDS_EXPAND_VERTICAL_TABS
+-                                     : IDS_COLLAPSE_VERTICAL_TABS);
 -      model->SetElementIdentifierAt(
+-          model->GetIndexOfCommandId(IDC_TOGGLE_VERTICAL_TABS_COLLAPSE).value(),
+-          kToggleVerticalTabsCollapseElementId);
+-    } else {
+-      model->AddItemWithStringId(IDC_TOGGLE_VERTICAL_TABS,
+-                                 IDS_SWITCH_TO_VERTICAL_TAB);
+-      const bool use_preview_badge =
+-          base::FeatureList::IsEnabled(tabs::kVerticalTabsPreviewBadge);
+-      const ui::NewBadgeType badge_type = use_preview_badge
+-                                              ? ui::NewBadgeType::kPreview
+-                                              : ui::NewBadgeType::kNew;
+-      const user_education::DisplayNewBadge show_badge =
+-          UserEducationService::MaybeShowNewBadge(
+-              browser()->GetProfile(), use_preview_badge
+-                                           ? tabs::kVerticalTabsPreviewBadge
+-                                           : tabs::kVerticalTabsNewBadge);
+-      model->SetIsNewFeatureAt(
 -          model->GetIndexOfCommandId(IDC_TOGGLE_VERTICAL_TABS).value(),
--          kToggleVerticalTabsElementId);
--      model->AddItemWithStringId(IDC_VERTICAL_TABS_SEND_FEEDBACK,
--                                 IDS_VERTICAL_TABS_SEND_FEEDBACK);
+-          show_badge, badge_type);
 -    }
+-    model->SetElementIdentifierAt(
+-        model->GetIndexOfCommandId(IDC_TOGGLE_VERTICAL_TABS).value(),
+-        kToggleVerticalTabsElementId);
+-
+-    const bool show_expand_on_hover =
+-        tabs::IsVerticalTabsExpandOnHoverFeatureEnabled() &&
+-        controller->ShouldDisplayVerticalTabs();
+-    if (show_expand_on_hover) {
+-      model->AddItemWithStringId(
+-          IDC_TOGGLE_VERTICAL_TABS_EXPAND_ON_HOVER,
+-          controller->IsExpandOnHoverEnabled()
+-              ? IDS_VERTICAL_TABS_DISABLE_EXPAND_ON_HOVER
+-              : IDS_VERTICAL_TABS_ENABLE_EXPAND_ON_HOVER);
+-      model->SetElementIdentifierAt(
+-          model->GetIndexOfCommandId(IDC_TOGGLE_VERTICAL_TABS_EXPAND_ON_HOVER)
+-              .value(),
+-          kToggleVerticalTabsExpandOnHoverElementId);
+-    }
+-
+-    model->AddItemWithStringId(IDC_VERTICAL_TABS_SEND_FEEDBACK,
+-                               IDS_VERTICAL_TABS_SEND_FEEDBACK);
 -  }
 -
    if (chrome::CanOpenTaskManager()) {
@@ -268,14 +310,14 @@
 --- a/chrome/browser/ui/views/frame/system_menu_model_delegate.cc
 +++ b/chrome/browser/ui/views/frame/system_menu_model_delegate.cc
 @@ -15,6 +15,7 @@
- #include "chrome/browser/ui/browser_commands.h"
  #include "chrome/browser/ui/browser_window.h"
  #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 +#include "chrome/browser/ui/helium/helium_layout_state_controller.h"
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_metrics.h"
  #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
- #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_metrics.h"
- #include "chrome/grit/generated_resources.h"
-@@ -45,6 +46,34 @@ bool SystemMenuModelDelegate::IsCommandI
+ #include "chrome/browser/ui/ui_features.h"
+@@ -56,6 +57,34 @@ bool SystemMenuModelDelegate::IsCommandI
      return !prefs->GetBoolean(prefs::kUseCustomChromeFrame);
    }
  #endif
@@ -310,9 +352,9 @@
    return false;
  }
  
-@@ -79,6 +108,13 @@ bool SystemMenuModelDelegate::IsCommandI
+@@ -111,6 +140,13 @@ bool SystemMenuModelDelegate::IsCommandI
    if (command_id == IDC_GLIC_TOGGLE_PIN) {
-     return glic::GlicEnabling::IsEnabledForProfile(browser_->profile());
+     return glic::GlicEnabling::IsEnabledForProfile(browser_->GetProfile());
    }
 +
 +  if (command_id == IDC_BROWSER_LAYOUT_VERTICAL_RIGHT) {

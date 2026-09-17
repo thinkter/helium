@@ -17,10 +17,10 @@
 -    const int trailing_padding = 8;
 +    const int leading_padding = 3;
 +    const int trailing_padding = 3;
-     separator_thickness_ = kBookmarkBarSeparatorThickness;
      const gfx::Insets border_insets =
          gfx::Insets::TLBR(0, leading_padding, 0, trailing_padding);
-@@ -728,7 +728,7 @@ void BookmarkBarView::Layout(PassKey) {
+     const ui::ColorId color_id = kColorBookmarkBarSeparatorChromeRefresh;
+@@ -730,7 +730,7 @@ void BookmarkBarView::Layout(PassKey) {
    }
  
    int x = GetLeadingMargin();
@@ -29,7 +29,7 @@
    int width = View::width() - x - kBookmarkBarTrailingMargin;
  
    const int button_height =
-@@ -849,7 +849,7 @@ void BookmarkBarView::Layout(PassKey) {
+@@ -851,7 +851,7 @@ void BookmarkBarView::Layout(PassKey) {
      // the bookmark buttons.
      if (saved_tab_group_bar_width > 0) {
        // Possibly update the paddings of the separator

@@ -86,7 +86,14 @@ def clone(args): # pylint: disable=too-many-branches, too-many-locals, too-many-
     # Set up staging directory
     ucstaging.mkdir(exist_ok=True)
 
-    get_logger().info('Cloning latest depot_tools')
+    get_logger().info('Cloning depot_tools')
+    dt_commit = re.search(r"depot_tools\.git'\s*\+\s*'@'\s*\+\s*'([^']+)',",
+                          Path(args.output / 'DEPS').read_text(encoding=ENCODING)).group(1)
+    if args.dt_commit:
+        dt_commit = args.dt_commit
+    if not dt_commit:
+        get_logger().error('Unable to obtain commit for depot_tools checkout')
+        sys.exit(1)
     if not dtpath.exists():
         dtpath.mkdir()
         run(['git', 'init', '-q'], cwd=dtpath, check=True)
@@ -96,8 +103,8 @@ def clone(args): # pylint: disable=too-many-branches, too-many-locals, too-many-
         ],
             cwd=dtpath,
             check=True)
-    run(['git', 'fetch', '--depth=1', 'origin', 'HEAD'], cwd=dtpath, check=True)
-    run(['git', 'reset', '--hard', 'FETCH_HEAD'], cwd=dtpath, check=True)
+    run(['git', 'fetch', '--depth=1', 'origin', dt_commit], cwd=dtpath, check=True)
+    run(['git', 'reset', '--hard', dt_commit], cwd=dtpath, check=True)
     run(['git', 'clean', '-ffdx'], cwd=dtpath, check=True)
     if iswin:
         (dtpath / 'git.bat').write_text('git')
@@ -110,7 +117,7 @@ def clone(args): # pylint: disable=too-many-branches, too-many-locals, too-many-
         check=True,
         universal_newlines=True)
 
-    # Manualy set up the gsutil directory for newer versions of Python
+    # Manually set up the gsutil directory for newer versions of Python
     get_logger().info('Cloning gsutil')
     if not gsupath.exists():
         gsupath.mkdir(parents=True)
@@ -226,7 +233,7 @@ def clone(args): # pylint: disable=too-many-branches, too-many-locals, too-many-
     move(str(gnpath / 'out' / 'last_commit_position.h'),
          str(args.output / 'tools' / 'gn' / 'bootstrap'))
 
-    get_logger().info('Removing uneeded files')
+    get_logger().info('Removing unneeded files')
     for path in sorted(args.output.rglob('*'), key=lambda l: len(str(l)), reverse=True):
         if not path.is_symlink() and '.git' not in path.parts:
             if path.is_file() and (('out' in path.parts and 'node_modules' not in path.parts)
@@ -269,6 +276,9 @@ def main():
                         '--sysroot',
                         choices=('amd64', 'arm64', 'armhf', 'i386', 'mips64el', 'mipsel'),
                         help='Download a linux sysroot for the given architecture')
+    parser.add_argument('--dt-commit',
+                        help=('Specify a commit for the depot_tools checkout. '
+                              'Defaults to using the commit specified in the DEPS file.'))
     add_common_params(parser)
     args = parser.parse_args()
     clone(args)
