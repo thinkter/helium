@@ -17,6 +17,10 @@
   completion separately from runtime/ISC acceptance. Release readiness still
   requires an explicitly authorized runtime-validation phase.
 
+2026-09-17 — T10 implementation closed after the finite modal attachment P1
+fix; see `T10-closure-result.md`. Runtime remains **UNVERIFIED**; T11 may proceed.
+Both disabled gates and the no-public-exposure restriction remain in force.
+
 This supersedes the earlier plan/workflow instruction to run applicable tests
 and the blocker report's proposed resource-restoration gate. It does not grant
 permission to restore resources, execute tests, or enable the incomplete mode.
