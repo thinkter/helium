@@ -1,6 +1,6 @@
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -519,6 +519,8 @@
+@@ -519,6 +519,8 @@ static_library("ui") {
    sources = [
      "helium/helium_layout_state_controller.cc",
      "helium/helium_layout_state_controller.h",
@@ -19,7 +19,7 @@
  #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
  #include "chrome/browser/ui/lens/lens_overlay_entry_point_controller.h"
  #include "chrome/browser/ui/omnibox/ai_mode_page_action_controller.h"
-@@ -609,6 +610,11 @@
+@@ -609,6 +610,11 @@ void BrowserWindowFeatures::Init(Browser
                *browser, browser, browser_actions_->root_action_item());
      }
  
@@ -31,7 +31,7 @@
      helium_layout_state_controller_ =
          GetUserDataFactory().CreateInstance<HeliumLayoutStateController>(
              *browser, browser, profile->GetPrefs());
-@@ -1202,6 +1208,8 @@
+@@ -1202,6 +1208,8 @@ void BrowserWindowFeatures::TearDownPreB
    glic_split_button_controller_.reset();
    initial_web_ui_manager_.reset();
    ai_overlay_dialog_controller_.reset();
@@ -42,7 +42,7 @@
    // contextual_tasks_* are reset first because the group is constructed last
 --- a/chrome/browser/ui/browser_window/public/browser_window_features.h
 +++ b/chrome/browser/ui/browser_window/public/browser_window_features.h
-@@ -196,6 +196,10 @@
+@@ -196,6 +196,10 @@ class GlicNudgeController;
  class GlicSplitButtonController;
  }  // namespace glic
  
@@ -53,7 +53,7 @@
  namespace lens {
  class LensOverlayEntryPointController;
  class LensRegionSearchController;
-@@ -709,6 +713,7 @@
+@@ -709,6 +713,7 @@ class BrowserWindowFeatures {
    std::unique_ptr<BrowserUserEducationInterface> user_education_;
    std::unique_ptr<VerticalTabIphController> vertical_tab_iph_controller_;
    std::unique_ptr<HeliumLayoutStateController> helium_layout_state_controller_;
@@ -63,7 +63,7 @@
        vertical_tab_strip_state_controller_;
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_controller.cc
-@@ -0,0 +1,330 @@
+@@ -0,0 +1,333 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -74,9 +74,10 @@
 +#include "base/functional/bind.h"
 +#include "base/task/single_thread_task_runner.h"
 +#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/helium/workspaces/workspace_layout_geometry.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
 +#include "chrome/browser/ui/views/frame/browser_view.h"
 +#include "chrome/browser/ui/views/frame/workspace_contents_view.h"
-+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 +
 +namespace helium::workspaces {
 +
@@ -206,10 +207,13 @@
 +        GetDisplayedTabs());
 +  }
 +  // TabStripModel forbids reentrant mutations. Non-nestable dispatch prevents
-+  // nested UI loops from activating before the focus/observer stack unwinds. Do not optimistically reveal
-+  // a different page, and do not access this controller after activation:
-+  // synchronous observers can stop tracking or destroy the window. The normal
-+  // selection notification below commits the selected ancestor path.
++  // nested UI loops from activating before the focus/observer stack unwinds.
++  // Do not optimistically reveal a different page, and do not access this
++  // controller after activation: synchronous observers can stop tracking or
++  // destroy the window. The normal selection notification below commits the
++  // selected ancestor path. TabStripModel consumes pending intent within its
++  // selection transaction, including no-op selection. Nothing here may touch
++  // the controller after synchronous activation returns.
 +  window_->GetTabStripModel()->ActivateTab(tab);
 +}
 +
@@ -264,10 +268,9 @@
 +  if (!tracking_) {
 +    return;
 +  }
-+  std::vector<tabs::TabInterface*> displayed;
 +  for (TabKey key : keys) {
-+    if (auto* tab = ResolveTab(key)) {
-+      displayed.push_back(tab);
++    if (!ResolveTab(key)) {
++      return;
 +    }
 +  }
 +  // This is the committed projection. Pending selection state is reserved for
@@ -396,7 +399,7 @@
 +}  // namespace helium::workspaces
 --- /dev/null
 +++ b/chrome/browser/ui/helium/workspaces/workspace_controller.h
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,130 @@
 +// Copyright 2026 The Helium Authors
 +// You can use, redistribute, and/or modify this source code under
 +// the terms of the GPL-3.0 license that can be found in the LICENSE file.
@@ -428,9 +431,10 @@
 +
 +BASE_DECLARE_FEATURE(kWorkspaceTabTracking);
 +
-+// Per-window, memory-only policy and activation adapter. Does not own tabs,
-+// attach contents, change foreground reporting, or enable interactive tiling.
-+// BrowserWindowFeatures destroys this before the window and tab strip.
++// Per-window, memory-only policy and activation adapter. Tabs and WebContents
++// remain Chromium-owned; BrowserView owns the native presentation. There is no
++// public enablement path. BrowserWindowFeatures destroys this before the window
++// and tab strip.
 +class WorkspaceController : public TabStripModelObserver {
 + public:
 +  DECLARE_USER_DATA(WorkspaceController);
@@ -447,7 +451,7 @@
 +  WorkspaceController& operator=(const WorkspaceController&) = delete;
 +
 +  static WorkspaceController* From(BrowserWindowInterface* window);
-+  // Explicit observation-only opt-in; not called by production UI. Native
++  // Explicit internal host opt-in; not called by production UI. Native
 +  // splits must be closed first. Later split creation stops tracking rather
 +  // than migrating/destroying tabs. T11 must enforce exclusion before exposure.
 +  StartResult StartTracking();
@@ -518,6 +522,7 @@
 +  raw_ptr<WorkspaceContentsView> workspace_host_ = nullptr;
 +  uint64_t generation_ = 0;
 +  bool tracking_ = false;
++
 +  ui::ScopedUnownedUserData<WorkspaceController> scoped_unowned_user_data_;
 +  base::WeakPtrFactory<WorkspaceController> activation_requests_{this};
 +};
@@ -841,7 +846,7 @@
 +}  // namespace helium::workspaces
 --- a/chrome/browser/ui/tabs/tab_strip_model.cc
 +++ b/chrome/browser/ui/tabs/tab_strip_model.cc
-@@ -1351,6 +1351,10 @@
+@@ -1351,6 +1351,10 @@ tabs::TabInterface* TabStripModel::GetAc
  }
  
  std::vector<tabs::TabInterface*> TabStripModel::GetForegroundTabs() const {
@@ -852,7 +857,7 @@
    tabs::TabInterface* active_tab = GetActiveTab();
    if (!active_tab) {
      return std::vector<tabs::TabInterface*>();
-@@ -1361,6 +1365,28 @@
+@@ -1361,6 +1365,31 @@ std::vector<tabs::TabInterface*> TabStri
    return std::vector<tabs::TabInterface*>{active_tab};
  }
  
@@ -867,13 +872,16 @@
 +
 +void TabStripModel::SetPendingDisplayedTabsForSelection(
 +    std::vector<tabs::TabInterface*> tabs) {
-+  pending_displayed_tabs_for_selection_ = std::move(tabs);
++  // Empty input is an aborted projection, not an empty foreground override.
++  pending_displayed_tabs_for_selection_.reset();
++  if (!tabs.empty()) {
++    pending_displayed_tabs_for_selection_ = std::move(tabs);
++  }
 +}
 +
 +std::vector<tabs::TabInterface*> TabStripModel::GetDisplayedTabs() const {
-+  if (pending_displayed_tabs_for_selection_) {
-+    return *pending_displayed_tabs_for_selection_;
-+  }
++  // Foreground queries always describe committed native attachments. Pending
++  // selection intent is consumed only by the transition notification below.
 +  return displayed_tabs_provider_ ? displayed_tabs_provider_.Run()
 +                                  : std::vector<tabs::TabInterface*>();
 +}
@@ -881,7 +889,7 @@
  WebContents* TabStripModel::GetWebContentsAt(int index) const {
    if (ContainsIndex(index)) {
      return GetTabAtIndex(index)->GetContents();
-@@ -1603,6 +1629,11 @@
+@@ -1603,6 +1632,11 @@ bool TabStripModel::IsTabInForeground(in
      return false;
    }
  
@@ -893,13 +901,26 @@
    const tabs::TabInterface* active_tab = GetActiveTab();
    if (!active_tab) {
      return false;
-@@ -6109,14 +6140,19 @@
+@@ -4214,6 +4248,10 @@ TabStripSelectionChange TabStripModel::S
+     }
+   }
+ 
++  // Consume even a no-op selection, before invoking observers. A pending
++  // projection must never leak into a later unrelated selection transaction.
++  pending_displayed_tabs_for_selection_.reset();
++
+   // This is done after notifying TabDeactivated() because caller can assume
+   // that TabStripModel::active_index() would return the index for
+   // |selection.old_contents|.
+@@ -6109,13 +6147,19 @@ void TabStripModel::CreateHistoricalSpli
  }
  
  void TabStripModel::NotifyForegroundTabsWillEnterBackground() {
 -  for (tabs::TabInterface* tab : GetForegroundTabs()) {
 +  const auto old_foreground = GetForegroundTabs();
-+  const auto new_displayed = GetDisplayedTabs();
++  auto pending = std::exchange(pending_displayed_tabs_for_selection_,
++                               std::nullopt);
++  const auto new_displayed = pending ? std::move(*pending) : GetDisplayedTabs();
 +  for (tabs::TabInterface* tab : old_foreground) {
      if (tab->IsActivated()) {
 -      static_cast<tabs::TabModel*>(GetActiveTab())
@@ -913,10 +934,8 @@
 +          base::PassKey<TabStripModel>());
 +    }
    }
-+  pending_displayed_tabs_for_selection_.reset();
  }
  
- void TabStripModel::NotifyInactiveSplitTabWillBecomeHidden(
 --- a/chrome/browser/ui/tabs/tab_strip_model.h
 +++ b/chrome/browser/ui/tabs/tab_strip_model.h
 @@ -21,6 +21,7 @@
@@ -927,7 +946,7 @@
  #include "base/scoped_multi_source_observation.h"
  #include "base/scoped_observation.h"
  #include "base/time/time.h"
-@@ -440,6 +441,19 @@
+@@ -440,6 +441,19 @@ class TabStripModel {
    // that split. Doesn't take into account occlusion.
    std::vector<tabs::TabInterface*> GetForegroundTabs() const;
  
@@ -947,7 +966,7 @@
    // Returns the WebContents at the specified index, or NULL if there is
    // none.
    content::WebContents* GetWebContentsAt(int index) const;
-@@ -1457,6 +1471,7 @@
+@@ -1457,6 +1471,7 @@ class TabStripModel {
        uint32_t close_types);
  
    void NotifyForegroundTabsWillEnterBackground();
@@ -955,7 +974,7 @@
  
    // Prior to a split being removed, if the split is currently active, notify
    // the inactive tab(s) in the split will become hidden as a result of the
-@@ -1516,6 +1531,9 @@
+@@ -1516,6 +1531,9 @@ class TabStripModel {
  
    // Tracks whether a modal UI is showing.
    bool showing_modal_ui_ = false;
@@ -976,7 +995,15 @@
  
  #include <stdint.h>
  
-@@ -1370,16 +1372,65 @@
+@@ -1234,6 +1236,7 @@ BrowserView::~BrowserView() {
+   find_bar_host_view_ = nullptr;
+   infobar_container_ = nullptr;
+   multi_contents_view_ = nullptr;
++  workspace_contents_view_ = nullptr;
+   main_shadow_overlay_ = nullptr;
+   window_scrim_view_ = nullptr;
+   vertical_tab_strip_region_view_ = nullptr;
+@@ -1370,16 +1373,72 @@ views::View* BrowserView::GetSidePanelAn
  }
  
  ContentsContainerView* BrowserView::GetActiveContentsContainerView() {
@@ -1009,7 +1036,8 @@
 +  if (!workspace_contents_view_) {
 +    // Transfer ownership before exposing the new host. BrowserView's native
 +    // pair must not retain a WebContents while the workspace attaches it.
-+    for (auto* container : multi_contents_view_->contents_container_views()) {
++    for (const auto& container :
++         multi_contents_view_->contents_container_views()) {
 +      container->contents_view()->set_is_primary_web_contents_for_window(false);
 +      container->contents_view()->SetWebContents(nullptr);
 +      container->SetVisible(false);
@@ -1026,23 +1054,29 @@
 +  if (!workspace_contents_view_)
 +    return;
 +  workspace_contents_view_->Clear();
-+  RemoveChildViewT(workspace_contents_view_.release());
++  auto* host = workspace_contents_view_.get();
++  workspace_contents_view_ = nullptr;
++  RemoveChildViewT(host);
 +  // Reverse the transfer only after the workspace has detached every page.
 +  auto* active = browser_->tab_strip_model()->GetActiveWebContents();
++  multi_contents_view_->GetActiveContentsView()
++      ->set_is_primary_web_contents_for_window(true);
 +  multi_contents_view_->GetActiveContentsView()->SetWebContents(active);
-+  for (auto* container : multi_contents_view_->contents_container_views())
++  for (const auto& container : multi_contents_view_->contents_container_views())
 +    container->SetVisible(container->contents_view()->web_contents() != nullptr);
 +  InvalidateLayout();
 +}
 +
  std::vector<raw_ptr<ContentsContainerView, DanglingUntriaged>>
  BrowserView::GetContentsContainerViews() {
-+  if (workspace_contents_view_)
-+    return workspace_contents_view_->GetDisplayedContainers();
++  if (workspace_contents_view_) {
++    const auto containers = workspace_contents_view_->GetDisplayedContainers();
++    return {containers.begin(), containers.end()};
++  }
    return multi_contents_view_->contents_container_views();
  }
  
-@@ -2594,6 +2645,14 @@
+@@ -2594,6 +2653,14 @@ void BrowserView::OnActiveTabChanged(con
                                       int reason) {
    DCHECK(new_contents);
    TRACE_EVENT0("ui", "BrowserView::OnActiveTabChanged");
@@ -1057,7 +1091,7 @@
    views::WebView* active_contents_view = GetActiveContentsWebView();
    bool tab_change_in_split_view =
        IsTabChangeInSplitView(old_contents, new_contents);
-@@ -2739,6 +2798,14 @@
+@@ -2739,6 +2806,14 @@ void BrowserView::OnActiveTabChanged(con
  void BrowserView::OnTabDetached(content::WebContents* contents,
                                  bool was_active) {
    DCHECK(contents);
@@ -1072,7 +1106,7 @@
    if (!was_active) {
      return;
    }
-@@ -2792,6 +2859,11 @@
+@@ -2792,6 +2867,11 @@ gfx::Rect BrowserView::GetBounds() const
  
  gfx::Size BrowserView::GetContentsSize() const {
    DCHECK(initialized_);
@@ -1084,7 +1118,7 @@
    return multi_contents_view_->GetActiveContentsContainerView()->size();
  }
  
-@@ -3439,6 +3511,10 @@
+@@ -3439,6 +3519,10 @@ void BrowserView::ShowChromeLabs() {
  }
  
  views::WebView* BrowserView::GetActiveContentsWebView() {
@@ -1095,7 +1129,7 @@
    return multi_contents_view_->GetActiveContentsView();
  }
  
-@@ -5078,6 +5154,12 @@
+@@ -5078,6 +5162,12 @@ void BrowserView::MaybeUpdateStoredFocus
  }
  
  std::vector<ContentsWebView*> BrowserView::GetAllVisibleContentsWebViews() {
@@ -1108,7 +1142,7 @@
    std::vector<ContentsWebView*> contents_views;
    contents_views.push_back(multi_contents_view_->GetActiveContentsView());
    ContentsWebView* inactive_contents_view =
-@@ -5528,6 +5610,14 @@
+@@ -5528,6 +5618,14 @@ void BrowserView::Layout(PassKey) {
  
    LayoutSuperclass<views::View>(this);
  
@@ -1125,7 +1159,7 @@
    GetFrameView()->UpdateMinimumSize();
 --- a/chrome/browser/ui/views/frame/browser_view.h
 +++ b/chrome/browser/ui/views/frame/browser_view.h
-@@ -106,6 +106,10 @@
+@@ -106,6 +106,10 @@ class TopControlsSlideControllerTest;
  class VerticalTabStripRegionView;
  class WebAppFrameToolbarView;
  
@@ -1136,7 +1170,7 @@
  namespace gfx {
  class AnimationRunner;
  }  // namespace gfx
-@@ -238,6 +242,15 @@
+@@ -238,6 +242,15 @@ class BrowserView : public BrowserWindow
    ContentsContainerView* GetContentsContainerViewFor(
        content::WebContents* web_contents);
  
@@ -1152,18 +1186,19 @@
    // Container for the tabstrip, toolbar, etc.
    TopContainerView* top_container() { return top_container_; }
  
-@@ -1279,6 +1292,8 @@
+@@ -1279,6 +1292,9 @@ class BrowserView : public BrowserWindow
  
    // The view that contains all visible WebContents.
    raw_ptr<MultiContentsView> multi_contents_view_ = nullptr;
-+  std::unique_ptr<helium::workspaces::WorkspaceContentsView>
-+      workspace_contents_view_;
++  // Owned by the Views child hierarchy, like multi_contents_view_.
++  raw_ptr<helium::workspaces::WorkspaceContentsView> workspace_contents_view_ =
++      nullptr;
  
    // The view responsible for housing the contents of the vertical tab strip.
    raw_ptr<VerticalTabStripRegionView> vertical_tab_strip_region_view_ = nullptr;
 --- a/chrome/browser/ui/views/frame/contents_border_controller.cc
 +++ b/chrome/browser/ui/views/frame/contents_border_controller.cc
-@@ -86,6 +86,8 @@
+@@ -86,6 +86,8 @@ void ContentsBorderController::ContentsC
  void ContentsBorderController::ContentsContainerViewBorderController::
      OnWebContentsDetached(views::WebView* web_view) {
    tab_capture_change_subscription_ = base::CallbackListSubscription();
@@ -1182,7 +1217,7 @@
  
  #include "base/auto_reset.h"
  #include "base/check.h"
-@@ -47,7 +48,11 @@
+@@ -47,7 +48,11 @@ bool WorkspaceContentsView::Present(
      const LayoutMetrics& metrics,
      const std::map<TabKey, content::WebContents*>& contents,
      const WorkspaceTabbedHeaderView::Titles& titles) {
@@ -1195,7 +1230,7 @@
      return false;
    }
    base::AutoReset<bool> presenting(&presenting_, true);
-@@ -80,11 +85,13 @@
+@@ -80,11 +85,13 @@ bool WorkspaceContentsView::Present(
      return gfx::Rect(x, y, edge(r.x + r.width, pixel_width, width()) - x,
                       edge(r.y + r.height, pixel_height, height()) - y);
    };
@@ -1211,7 +1246,7 @@
      if (it == contents.end() || !it->second ||
          it->second->GetBrowserContext() != browser_view_->GetProfile() ||
          !unique.insert(it->second).second) {
-@@ -96,7 +103,8 @@
+@@ -96,7 +103,8 @@ bool WorkspaceContentsView::Present(
        return false;
      }
      bounds.push_back(rect);
@@ -1221,7 +1256,7 @@
    }
  
    std::vector<std::unique_ptr<WorkspaceTabbedHeaderView>> headers;
-@@ -159,26 +167,100 @@
+@@ -159,26 +167,103 @@ bool WorkspaceContentsView::Present(
      }
    }
  
@@ -1239,6 +1274,9 @@
 +  for (auto& [key, host] : leaves_) {
 +    auto it = resolved.find(key);
 +    auto* view = host.container->contents_view();
++    // Revoke the old primary before detachment or replacement, not after a
++    // different page has already acquired a native attachment.
++    view->set_is_primary_web_contents_for_window(false);
 +    if (it == resolved.end() || view->web_contents() != it->second) {
 +      view->SetWebContents(nullptr);
 +    }
@@ -1334,7 +1372,7 @@
      // A thick square outline of the structural subtree, independent of native
      // rounded page-focus borders and the header's selected-child bottom rule.
      selection_outline_ = AddChildView(std::make_unique<views::View>());
-@@ -186,8 +268,36 @@
+@@ -186,8 +271,36 @@ bool WorkspaceContentsView::Present(
      selection_outline_->GetViewAccessibility().SetIsIgnored(true);
      selection_outline_->SetBorder(
          views::CreateSolidBorder(4, ui::kColorFocusableBorderUnfocused));
@@ -1371,7 +1409,7 @@
    return true;
  }
  
-@@ -211,7 +321,7 @@
+@@ -211,7 +324,7 @@ gfx::Rect WorkspaceContentsView::selecti
    return selection_outline_ ? selection_outline_->bounds() : gfx::Rect();
  }
  
@@ -1380,7 +1418,7 @@
    if (selection_outline_) {
      auto* outline = selection_outline_.get();
      selection_outline_ = nullptr;
-@@ -227,14 +337,27 @@
+@@ -227,14 +340,28 @@ void WorkspaceContentsView::Clear() {
      headers_.pop_back();
      RemoveChildViewT(header);
    }
@@ -1396,6 +1434,7 @@
 +  while (!leaves_.empty()) {
 +    auto it = leaves_.begin();
 +    auto* container = it->second.container.get();
++    container->contents_view()->set_is_primary_web_contents_for_window(false);
      container->contents_view()->SetWebContents(nullptr);
 +    leaves_.erase(it);
      RemoveChildViewT(container);
@@ -1427,7 +1466,30 @@
  #include "chrome/browser/ui/views/frame/workspace_resize_area.h"
  #include "chrome/browser/ui/views/frame/workspace_tabbed_header_view.h"
  #include "ui/views/view.h"
-@@ -57,15 +59,28 @@
+@@ -25,15 +27,13 @@ namespace helium::workspaces {
+ 
+ BASE_DECLARE_FEATURE(kWorkspaceContentsHost);
+ 
+-// Experimental rendering harness, NOT a BrowserView content-host replacement.
+-// No browser construction path uses this class, even when the feature is on.
+-// BrowserView must outlive it. Callers must supply externally owned contents
+-// not attached to another WebView and Clear() before transferring them
+-// elsewhere. Input is resolved afresh per presentation; the model never owns
+-// WebContents. Views event handling is disabled, but this is NOT a native-input
+-// or focus isolation boundary. Controlled tests only: activation, foreground
+-// and modal-host adapters must exist before browser use. No primary-window AX
+-// designation is made here.
++// Experimental native content host. BrowserView must outlive it and transfer
++// attachments from its ordinary host before presentation (and Clear() before
++// transferring them back). The model never owns WebContents. The active model
++// leaf alone is designated primary for accessibility. Views event handling is
++// disabled, but this is NOT a native-input or focus isolation boundary. The
++// internal controller path remains gated with no public enablement until the
++// activation, foreground, focus and accessory adapters are complete.
+ class WorkspaceContentsView : public views::View {
+   METADATA_HEADER(WorkspaceContentsView, views::View)
+ 
+@@ -57,15 +57,28 @@ class WorkspaceContentsView : public vie
    gfx::Rect selection_bounds() const;
    void Clear();
  
@@ -1482,7 +1544,7 @@
  #include "chrome/test/base/in_process_browser_test.h"
  #include "content/public/browser/web_contents.h"
  #include "content/public/test/browser_test.h"
-@@ -116,6 +120,66 @@
+@@ -116,6 +120,66 @@ IN_PROC_BROWSER_TEST_F(WorkspaceContents
      EXPECT_EQ(containers[i]->contents_view()->web_contents(), bindings.at(tab));
    }
  
@@ -1549,7 +1611,7 @@
    // A missing binding must not partially detach the current native tree.
    auto incomplete = bindings;
    incomplete.erase(tabs[0]);
-@@ -135,6 +199,14 @@
+@@ -135,6 +199,14 @@ IN_PROC_BROWSER_TEST_F(WorkspaceContents
    EXPECT_FALSE(host->GetHeaders()[0]->children()[0]->GetEnabled());
    EXPECT_FALSE(host->selection_bounds().IsEmpty());
    const auto old_containers = host->GetDisplayedContainers();
@@ -1564,7 +1626,7 @@
    host->UpdateTitles({{tabs[0], u"Email"}, {tabs[2], u"Updated title"}});
    EXPECT_EQ(host->GetDisplayedContainers(), old_containers);
    containers = host->GetDisplayedContainers();
-@@ -168,6 +240,59 @@
+@@ -168,6 +240,59 @@ IN_PROC_BROWSER_TEST_F(WorkspaceContents
    }
  }
  
@@ -1626,7 +1688,7 @@
  IN_PROC_BROWSER_TEST_F(WorkspaceContentsViewBrowserTest,
 --- a/chrome/browser/ui/views/frame/workspace_resize_area.h
 +++ b/chrome/browser/ui/views/frame/workspace_resize_area.h
-@@ -47,6 +47,7 @@
+@@ -47,6 +47,7 @@ class WorkspaceResizeArea : public views
                ResizeTarget target);
    // Committed values in physical pixels; does not mutate model or geometry.
    void UpdateValue(int value_pixels, bool announce);
@@ -1636,7 +1698,7 @@
    void OnMouseCaptureLost() override;
 --- a/chrome/browser/ui/views/frame/workspace_tabbed_header_view.cc
 +++ b/chrome/browser/ui/views/frame/workspace_tabbed_header_view.cc
-@@ -98,23 +98,32 @@
+@@ -98,23 +98,32 @@ bool WorkspaceTabbedHeaderView::Update(c
    if (!visible || !node || node->layout != LayoutKind::kTabbed) {
      return false;
    }
@@ -1677,7 +1739,7 @@
      button->SetEnabled(!select_child_.is_null());
      button->SetFocusBehavior(FocusBehavior::ALWAYS);
      button->SetElideBehavior(gfx::ELIDE_TAIL);
-@@ -148,8 +157,8 @@
+@@ -148,8 +157,8 @@ void WorkspaceTabbedHeaderView::RequestS
      return;
    }
    // The callback may synchronously rebuild/delete this surface. Copy it, and
@@ -1690,7 +1752,7 @@
  }
 --- a/chrome/test/BUILD.gn
 +++ b/chrome/test/BUILD.gn
-@@ -3002,6 +3002,7 @@
+@@ -3002,6 +3002,7 @@ if (!is_android) {
        "../browser/ui/views/frame/multi_contents_view_drop_target_controller_browsertest.cc",
        "../browser/ui/views/frame/system_menu_model_builder_browsertest.cc",
        "../browser/ui/views/frame/vertical_tab_strip_region_view_browsertest.cc",
