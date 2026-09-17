@@ -1,0 +1,309 @@
+--- a/chrome/browser/ui/helium/workspaces/workspace_controller.cc
++++ b/chrome/browser/ui/helium/workspaces/workspace_controller.cc
+@@ -9,17 +9,24 @@
+ #include <utility>
+ 
+ #include "base/check.h"
++#include "base/command_line.h"
+ #include "base/functional/bind.h"
+ #include "base/functional/callback_helpers.h"
+ #include "base/i18n/rtl.h"
+ #include "base/task/single_thread_task_runner.h"
++#include "base/time/time.h"
++#include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/ui/browser_command_controller.h"
++#include "chrome/browser/ui/browser_tabstrip.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/helium/workspaces/workspace_layout_geometry.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/workspace_contents_view.h"
++#include "chrome/common/chrome_switches.h"
++#include "components/prefs/pref_service.h"
+ #include "components/tabs/public/split_tab_data.h"
++#include "content/public/browser/navigation_controller.h"
+ #include "content/public/browser/web_contents.h"
+ #include "ui/compositor/compositor.h"
+ #include "ui/views/widget/widget.h"
+@@ -132,6 +139,7 @@ WorkspaceController::StartResult Workspa
+ }
+ 
+ void WorkspaceController::StopTracking() {
++  developer_preview_ = false;
+   if (stopping_tracking_) {
+     return;
+   }
+@@ -488,6 +496,133 @@ void WorkspaceController::OnHostWindowCh
+           lifetime_.GetWeakPtr(), generation));
+ }
+ 
++void WorkspaceController::MaybeScheduleDeveloperPreview() {
++  const auto* command = base::CommandLine::ForCurrentProcess();
++  if (preview_scheduled_ || preview_attempted_ || tracking_ ||
++      !command->HasSwitch("helium-workspace-developer-preview") ||
++      !base::FeatureList::IsEnabled(kWorkspaceTabTracking) ||
++      !base::FeatureList::IsEnabled(kWorkspaceContentsHost) ||
++      window_->GetType() != BrowserWindowInterface::TYPE_NORMAL ||
++      window_->GetProfile()->IsOffTheRecord() ||
++      window_->GetProfile()->GetPrefs()->GetInitializationStatus() !=
++          PrefService::INITIALIZATION_STATUS_CREATED_NEW_PREF_STORE ||
++      !window_->GetTabStripModel()->GetActiveTab()) {
++    return;
++  }
++  // IsNewProfile() also returns true on application first-run with existing
++  // preferences. Require an actually new pref store, never that shortcut.
++  const auto directory = command->GetSwitchValuePath(switches::kUserDataDir);
++  if (!directory.IsAbsolute() ||
++      !directory.BaseName().AsUTF8Unsafe().starts_with(
++          "helium-workspace-preview-")) {
++    return;
++  }
++  auto* view = BrowserView::GetBrowserViewForBrowser(
++      window_->GetBrowserForMigrationOnly());
++  if (!view || view->contents_container()->bounds().IsEmpty()) {
++    return;
++  }
++  // Leave the initial layout/tab observer stack before any native transfer.
++  preview_scheduled_ = true;
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostNonNestableTask(
++      FROM_HERE, base::BindOnce(&WorkspaceController::StartDeveloperPreview,
++                                lifetime_.GetWeakPtr()));
++}
++
++void WorkspaceController::StartDeveloperPreview() {
++  preview_scheduled_ = false;
++  preview_attempted_ = true;
++  // At most one eligible window per process, including after stop/failure.
++  static bool claimed = false;
++  auto* strip = window_->GetTabStripModel();
++  auto* view = BrowserView::GetBrowserViewForBrowser(
++      window_->GetBrowserForMigrationOnly());
++  if (claimed || tracking_ || !view || !view->GetWidget() ||
++      view->GetWidget()->IsClosed() || view->IsFullscreen()) {
++    return;
++  }
++  // A first layout may precede Show(). Retry only this startup readiness, not
++  // rejected profiles/tabs or a stopped preview. Destruction cancels the task.
++  if (!view->GetWidget()->IsVisible() ||
++      view->contents_container()->bounds().IsEmpty()) {
++    if (++preview_startup_retries_ <= 10) {
++      base::SingleThreadTaskRunner::GetCurrentDefault()->PostNonNestableDelayedTask(
++          FROM_HERE, base::BindOnce(&WorkspaceController::StartDeveloperPreview,
++                                    lifetime_.GetWeakPtr()),
++          base::Milliseconds(100));
++    }
++    return;
++  }
++  if (strip->count() != 1 ||
++      strip->GetActiveWebContents()->GetVisibleURL() != GURL("about:blank") ||
++      HasNativeSplit()) {
++    return;
++  }
++  claimed = true;
++  auto weak = lifetime_.GetWeakPtr();
++  // Ordinary navigation and tab creation only. No second WebContents owner.
++  strip->GetActiveWebContents()->GetController().LoadURL(
++      GURL("data:text/html,<title>T11 PREVIEW - left</title>"
++           "<h1>T11 developer preview</h1><p>Disposable profile only.</p>"
++           "<p>Fullscreen and DevTools end tiling. Dialogs, permissions, find, "
++           "side panels and accessories are NOT validated. No T12/T13 support."
++           "</p><p>Click panes, use right-side headers, drag dividers. "
++           "Ordinary close and move remain Chromium-owned.</p>"
++           "<input placeholder='Left pane focus check'>"),
++      content::Referrer(), ui::PAGE_TRANSITION_TYPED, std::string());
++  for (const char* page : {
++           "data:text/html,<title>Right single page</title><h1>Right single page"
++           "</h1><p>Select the other header for a nested split.</p>"
++           "<input placeholder='Single page focus check'>",
++           "data:text/html,<title>Nested upper</title><h1>Nested upper</h1>"
++           "<input placeholder='Upper pane focus check'>",
++           "data:text/html,<title>Nested lower</title><h1>Nested lower</h1>"
++           "<input placeholder='Lower pane focus check'>"}) {
++    if (!weak) {
++      return;
++    }
++    chrome::AddTabAt(window_, GURL(page), -1, false);
++  }
++  if (!weak || strip->count() != 4 ||
++      StartTracking() != StartResult::kStarted || !weak) {
++    return;
++  }
++  developer_preview_ = true;
++  // Build a candidate with the same real tab associations, using only model
++  // mutations: H(left, Tabbed(single, V(upper, lower))). Commit once; active
++  // Chromium tab remains the left page throughout native presentation.
++  WorkspaceLayoutModel candidate;
++  const auto key = [this, strip](int i) {
++    return KeyForTab(strip->GetTabAtIndex(i));
++  };
++  candidate.CreateWorkspace(key(0), workspace_ids_, node_ids_);
++  const auto active_leaf = [&candidate]() {
++    return candidate.workspaces.front().active_leaf;
++  };
++  bool valid = candidate.SplitLeaf(active_leaf(), LayoutKind::kHorizontal,
++                                   key(1), node_ids_) &&
++               candidate.SplitLeaf(active_leaf(), LayoutKind::kVertical,
++                                   key(2), node_ids_) &&
++               candidate.SetLayout(LayoutKind::kTabbed, node_ids_) &&
++               candidate.SplitLeaf(active_leaf(), LayoutKind::kVertical,
++                                   key(3), node_ids_) &&
++               candidate.RevealTab(key(0)) && candidate.Validate();
++  if (!valid) {
++    StopDeveloperPreview();
++    return;
++  }
++  CancelInput();
++  ++generation_;
++  model_ = std::move(candidate);
++  PresentHost();
++}
++
++void WorkspaceController::StopDeveloperPreview() {
++  if (std::exchange(developer_preview_, false)) {
++    StopTracking();
++  }
++}
++
+ void WorkspaceController::OnHostLayoutChanged() {
+   PresentHost();
+ }
+--- a/chrome/browser/ui/helium/workspaces/workspace_controller.h
++++ b/chrome/browser/ui/helium/workspaces/workspace_controller.h
+@@ -35,7 +35,8 @@ BASE_DECLARE_FEATURE(kWorkspaceTabTracki
+ 
+ // Per-window, memory-only policy and activation adapter. Tabs and WebContents
+ // remain Chromium-owned; BrowserView owns the native presentation. There is no
+-// public enablement path. BrowserWindowFeatures destroys this before the window
++// general enablement path (only a disposable-profile developer preview).
++// BrowserWindowFeatures destroys this before the window
+ // and tab strip.
+ class WorkspaceController : public TabStripModelObserver {
+  public:
+@@ -53,9 +54,8 @@ class WorkspaceController : public TabSt
+   WorkspaceController& operator=(const WorkspaceController&) = delete;
+ 
+   static WorkspaceController* From(BrowserWindowInterface* window);
+-  // Explicit internal host opt-in; not called by production UI. Native
+-  // splits must be closed first. Later split creation stops tracking rather
+-  // than migrating/destroying tabs. T11 must enforce exclusion before exposure.
++  // Explicit internal host opt-in. Native splits must be closed first. Later
++  // native split creation stops tracking rather than migrating/destroying tabs.
+   StartResult StartTracking();
+   void StopTracking();
+   bool is_tracking() const { return tracking_; }
+@@ -92,6 +92,9 @@ class WorkspaceController : public TabSt
+   // Called by BrowserView after its layout/scale pass. The host bounds are
+   // owned by BrowserView; presentation is revalidated before publication.
+   void OnHostLayoutChanged();
++  // Temporary, explicit disposable-profile preview; not a general enable API.
++  void MaybeScheduleDeveloperPreview();
++  void StopDeveloperPreview();
+   // Window visibility/activation/screen-position changes revoke native input.
+   void OnHostWindowChanged();
+ 
+@@ -102,6 +105,7 @@ class WorkspaceController : public TabSt
+   uint64_t generation() const { return generation_; }
+ 
+  private:
++  void StartDeveloperPreview();
+   void ActivateRequestedTab(TabKey key, uint64_t expected_generation);
+   void ActivateInputTab(tabs::TabInterface* tab);
+   void SelectRequestedChild(NodeId container,
+@@ -149,6 +153,10 @@ class WorkspaceController : public TabSt
+   gfx::Rect presented_bounds_;
+   LayoutMetrics presented_metrics_;
+   uint64_t generation_ = 0;
++  int preview_startup_retries_ = 0;
++  bool preview_scheduled_ = false;
++  bool preview_attempted_ = false;
++  bool developer_preview_ = false;
+   bool tracking_ = false;
+   bool changing_tracking_ = false;
+   bool stopping_tracking_ = false;
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -5742,10 +5742,11 @@ void BrowserView::Layout(PassKey) {
+ 
+   if (workspace_contents_view_) {
+     workspace_contents_view_->SetBoundsRect(contents_container()->bounds());
+-    if (auto* controller = helium::workspaces::WorkspaceController::From(
+-            browser_)) {
+-      controller->OnHostLayoutChanged();
+-    }
++  }
++  if (auto* controller = helium::workspaces::WorkspaceController::From(
++          browser_)) {
++    controller->OnHostLayoutChanged();
++    controller->MaybeScheduleDeveloperPreview();
+   }
+ 
+   // TODO(jamescook): Why was this in the middle of layout code?
+@@ -6313,6 +6314,14 @@ bool BrowserView::MaybeUpdateSplitView(c
+ }
+ 
+ bool BrowserView::MaybeUpdateDevtools(content::WebContents* contents) {
++  // T11 preview does not implement T12 docked/undocked target policy. Yield
++  // back to the ordinary host instead of attaching DevTools to a tiled host.
++  if (contents && DevToolsWindow::GetInstanceForInspectedWebContents(contents)) {
++    if (auto* controller = helium::workspaces::WorkspaceController::From(
++            browser_)) {
++      controller->StopDeveloperPreview();
++    }
++  }
+   const tabs::TabInterface* const new_tab =
+       contents ? tabs::TabInterface::GetFromContents(contents) : nullptr;
+   auto* devtools_ui_controller =
+@@ -6379,6 +6388,12 @@ int BrowserView::GetClientAreaTop() {
+ }
+ 
+ void BrowserView::PrepareFullscreen(bool fullscreen) {
++  if (fullscreen) {
++    if (auto* controller = helium::workspaces::WorkspaceController::From(
++            browser_)) {
++      controller->StopDeveloperPreview();
++    }
++  }
+   if (top_controls_slide_controller_) {
+     top_controls_slide_controller_->OnBrowserFullscreenStateWillChange(
+         fullscreen);
+@@ -6458,6 +6473,12 @@ void BrowserView::ProcessFullscreen(bool
+ }
+ 
+ void BrowserView::RequestFullscreen(bool fullscreen, int64_t display_id) {
++  if (fullscreen) {
++    if (auto* controller = helium::workspaces::WorkspaceController::From(
++            browser_)) {
++      controller->StopDeveloperPreview();
++    }
++  }
+ #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
+   // Request target display fullscreen from lower layers on supported platforms.
+   browser_widget_->SetFullscreen(fullscreen, display_id);
+--- a/chrome/browser/devtools/devtools_window.cc
++++ b/chrome/browser/devtools/devtools_window.cc
+@@ -118,6 +118,7 @@
+ #include "chrome/browser/ui/browser_window.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"  // nogncheck crbug.com/40147906
+ #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"  // nogncheck crbug.com/40147906
++#include "chrome/browser/ui/helium/workspaces/workspace_controller.h"
+ #include "chrome/browser/ui/web_modal/browser_window_modal_dialog_delegate.h"  // nogncheck crbug.com/40147906
+ #include "components/keep_alive_registry/keep_alive_types.h"
+ #include "components/keep_alive_registry/scoped_keep_alive.h"
+@@ -1047,6 +1048,17 @@ void DevToolsWindow::Show(const DevTools
+ 
+   OverrideAndSyncDevToolsRendererPrefs();
+ #else
++  // Temporary T11 preview has no DevTools host policy. Yield before either
++  // docked attachment or undocked activation, including Inspect Element paths.
++  if (auto* inspected = GetInspectedWebContents()) {
++    if (auto* browser = GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
++            inspected)) {
++      if (auto* controller = helium::workspaces::WorkspaceController::From(
++              browser)) {
++        controller->StopDeveloperPreview();
++      }
++    }
++  }
+   if (is_docked_) {
+     DCHECK(can_dock_);
+     content::WebContents* inspected_web_contents = GetInspectedWebContents();

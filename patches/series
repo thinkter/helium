@@ -363,3 +363,4 @@ helium/ui/workspaces/model.patch
 helium/ui/workspaces/geometry.patch
 helium/ui/workspaces/views.patch
 helium/ui/workspaces/controller.patch
+helium/ui/workspaces/preview.patch
